@@ -390,3 +390,51 @@ input,select,textarea{font-family:inherit;}
 }
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 .toast i{color:var(--primary);}
+
+/* Mini map & vị trí báo cáo sự cố */
+#report-mini-map {
+  width: 100%;
+  height: 240px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+.report-location-gps {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--primary-dark);
+  border-radius: var(--radius-sm);
+  padding: 9px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  transition: background .15s, border-color .15s;
+}
+.report-location-gps:hover {
+  background: var(--primary-light);
+}
+.report-location-marker {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: var(--primary);
+  border: 3px solid #fff;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  box-shadow: var(--shadow-md);
+}
+.report-location-marker i {
+  transform: rotate(45deg);
+}
+.report-location-wrap {
+  position: relative;
+}

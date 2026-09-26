@@ -75,17 +75,14 @@
           <label class="mode-option" data-mode="fastest">
             <input type="radio" name="mode" value="fastest" />
             <span class="mode-label">Nhanh nhất</span>
-            <span class="mode-sub">α = 0</span>
           </label>
           <label class="mode-option checked" data-mode="balanced">
             <input type="radio" name="mode" value="balanced" checked />
             <span class="mode-label">Cân bằng</span>
-            <span class="mode-sub">α = 1</span>
           </label>
           <label class="mode-option" data-mode="safest">
             <input type="radio" name="mode" value="safest" />
             <span class="mode-label">An toàn nhất</span>
-            <span class="mode-sub">α = 3</span>
           </label>
         </div>
 
@@ -160,7 +157,19 @@
         <i class="fa-solid fa-location-crosshairs"></i>
         Vị trí hiện tại
       </button>
-      <input type="text" id="report-location" value="Chưa chọn vị trí" readonly />
+      <div class="report-location-wrap">
+        <input
+          type="text"
+          id="report-location"
+          placeholder="Nhập địa chỉ sự cố hoặc chọn trên bản đồ"
+          autocomplete="off"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded="false"
+          aria-controls="report-suggestions"
+        />
+        <ul id="report-suggestions" class="suggestions-dropdown hidden" role="listbox" aria-label="Gợi ý vị trí sự cố"></ul>
+      </div>
     </div>
 
     <div class="field-group">
@@ -254,85 +263,7 @@ const INCIDENT_TYPES = {
 };
 const LEVEL_LABEL = { thap: 'Thấp', trungbinh: 'Trung bình', cao: 'Cao' };
 
-/* ---------------------------------------------------------------
-   2. DỮ LIỆU DEMO SỰ CỐ — với timestamp thật + confidence
-   (tương đương dữ liệu có thể lấy từ GET /api/incidents)
---------------------------------------------------------------- */
-const NOW = Date.now();
-let incidents = [
-  {
-    id: 'demo-1', type: 'flood', level: 'cao',
-    lat: 10.7769, lng: 106.6982,
-    desc: 'Nước ngập khoảng 30cm, xe máy khó di chuyển.',
-    confidence: 100, reporterCount: 24,
-    reporterIds: ['u1','u2','u3'],
-    createdAt: NOW - 15*60*1000,
-    lastConfirmedAt: NOW - 15*60*1000,
-  },
-  {
-    id: 'demo-2', type: 'accident', level: 'cao',
-    lat: 10.7891, lng: 106.7020,
-    desc: 'Va chạm giữa 2 xe máy, đang chờ xử lý.',
-    confidence: 100, reporterCount: 18,
-    reporterIds: ['u1','u4'],
-    createdAt: NOW - 32*60*1000,
-    lastConfirmedAt: NOW - 32*60*1000,
-  },
-  {
-    id: 'demo-3', type: 'construction', level: 'trungbinh',
-    lat: 10.7820, lng: 106.6955,
-    desc: 'Rào chắn thi công chiếm 1 làn đường.',
-    confidence: 100, reporterCount: 9,
-    reporterIds: ['u5'],
-    createdAt: NOW - 2*60*60*1000,
-    lastConfirmedAt: NOW - 2*60*60*1000,
-  },
-  {
-    id: 'demo-4', type: 'traffic', level: 'trungbinh',
-    lat: 10.7735, lng: 106.7050,
-    desc: 'Ùn tắc kéo dài do giờ cao điểm.',
-    confidence: 100, reporterCount: 31,
-    reporterIds: ['u6','u7'],
-    createdAt: NOW - 5*60*1000,
-    lastConfirmedAt: NOW - 5*60*1000,
-  },
-  {
-    id: 'demo-5', type: 'danger', level: 'cao',
-    lat: 10.8010, lng: 106.7110,
-    desc: 'Khu vực thường xuyên xảy ra cướp giật ban đêm.',
-    confidence: 100, reporterCount: 14,
-    reporterIds: ['u8'],
-    createdAt: NOW - 24*60*60*1000,
-    lastConfirmedAt: NOW - 24*60*60*1000,
-  },
-  {
-    id: 'demo-6', type: 'damaged_road', level: 'thap',
-    lat: 10.7690, lng: 106.6900,
-    desc: 'Mặt đường có nhiều ổ gà.',
-    confidence: 100, reporterCount: 7,
-    reporterIds: ['u9'],
-    createdAt: NOW - 3*60*60*1000,
-    lastConfirmedAt: NOW - 3*60*60*1000,
-  },
-  {
-    id: 'demo-7', type: 'flood', level: 'trungbinh',
-    lat: 10.7940, lng: 106.6870,
-    desc: 'Ngập cục bộ tại điểm trũng.',
-    confidence: 100, reporterCount: 11,
-    reporterIds: ['u10'],
-    createdAt: NOW - 40*60*1000,
-    lastConfirmedAt: NOW - 40*60*1000,
-  },
-  {
-    id: 'demo-8', type: 'obstacle', level: 'thap',
-    lat: 10.7660, lng: 106.7080,
-    desc: 'Cây đổ chắn một phần lòng đường.',
-    confidence: 100, reporterCount: 5,
-    reporterIds: ['u11'],
-    createdAt: NOW - 20*60*1000,
-    lastConfirmedAt: NOW - 20*60*1000,
-  },
-];
+let incidents = [];
 
 /* ---------------------------------------------------------------
    3. TRẠNG THÁI CHUNG
@@ -358,6 +289,8 @@ let reportMap = null;
 let reportMarker = null;
 let reportMapInitialized = false;
 let reportSelectedLatLng = null;  // tọa độ người dùng chọn trên mini map
+let reportSearchTimer = null;
+let reportSearchToken = 0;
 
 /* ---------------------------------------------------------------
    4. UTILITY
@@ -441,6 +374,7 @@ function cleanupExpiredIncidents() {
     return c > 0.1;
   });
   if (incidents.length !== before) renderIncidents();
+  renderNearbyPanel();
 }
 
 // Chạy định kỳ mỗi 60 giây
@@ -474,6 +408,7 @@ function addOrConfirmIncident(data) {
     nearby.reporterCount = (nearby.reporterCount ?? 1) + 1;
     nearby.reporterIds = [...(nearby.reporterIds ?? []), DEMO_USER_ID];
     renderIncidents();
+    renderNearbyPanel();
     showToast(`Đã xác nhận sự cố. Độ tin cậy: ${Math.round(nearby.confidence)}%`);
     return;
   }
@@ -496,6 +431,7 @@ function addOrConfirmIncident(data) {
   };
   incidents.push(newInc);
   renderIncidents();
+  renderNearbyPanel();
 }
 
 /* ---------------------------------------------------------------
@@ -523,6 +459,7 @@ function initMap() {
   if (startLocation) updateStartMarker(startLocation.lat, startLocation.lng, startLocation.label);
   initStartLocationControls();
   initEndLocationControls();
+  initReportLocationControls();
 }
 
 /* ---------------------------------------------------------------
@@ -532,6 +469,7 @@ function setStartLocation(lat, lng, label, source) {
   startLocation = { lat, lng, label, source };
   document.getElementById('start-input').value = label;
   updateStartMarker(lat, lng, label);
+  renderNearbyPanel();
 }
 
 function updateStartMarker(lat, lng, label) {
@@ -628,6 +566,7 @@ function initStartLocationControls() {
   input.addEventListener('focus', () => { if (input.value.trim().length < 2) showStartQuickOptions(); });
   input.addEventListener('input', () => {
     startLocation = null;
+    renderNearbyPanel();
     clearTimeout(startSearchTimer);
     const q = input.value.trim();
     if (q.length < 2) { showStartQuickOptions(); return; }
@@ -636,6 +575,7 @@ function initStartLocationControls() {
   document.addEventListener('click', e => {
     if (!e.target.closest('#start-field')) hideStartSuggestions();
     if (!e.target.closest('#end-field')) hideEndSuggestions();
+    if (!e.target.closest('.report-location-wrap')) hideReportSuggestions();
   });
 }
 
@@ -898,18 +838,59 @@ function renderIncidents() {
 
 /* ---------------------------------------------------------------
    17. RENDER PANEL "CẢNH BÁO GẦN BẠN"
+   Dựa trên startLocation, incidents thật, confidence > 0.1 và khoảng cách <= 3000m
 --------------------------------------------------------------- */
+const NEARBY_ALERT_RADIUS_METERS = 3000;
+
+function formatDistance(meters) {
+  if (meters < 1000) {
+    return `${Math.round(meters)}m`;
+  }
+  return `${(meters / 1000).toFixed(1)}km`;
+}
+
 function renderNearbyPanel() {
-  const nearby = [
-    { type: 'flood', label: 'Ngập nước', dist: '500m' },
-    { type: 'accident', label: 'Tai nạn', dist: '1.2km' },
-    { type: 'construction', label: 'Công trình', dist: '2.1km' }
-  ];
-  document.getElementById('nearby-list').innerHTML = nearby.map(n => {
-    const meta = INCIDENT_TYPES[n.type];
+  const listEl = document.getElementById('nearby-list');
+  if (!listEl) return;
+
+  if (!startLocation || !isValidCoordinate(startLocation.lat, startLocation.lng)) {
+    listEl.innerHTML = '<div class="np-empty" style="font-size:12px;color:var(--text-muted);padding:4px 0;">Chưa xác định vị trí.</div>';
+    return;
+  }
+
+  const now = Date.now();
+  const validNearby = [];
+
+  for (const inc of incidents) {
+    const currentC = calculateCurrentConfidence(inc, now);
+    if (currentC <= 0.1) continue;
+
+    const distM = haversineMeters(startLocation.lat, startLocation.lng, inc.lat, inc.lng);
+    if (distM <= NEARBY_ALERT_RADIUS_METERS) {
+      validNearby.push({
+        incident: inc,
+        distance: distM
+      });
+    }
+  }
+
+  if (validNearby.length === 0) {
+    listEl.innerHTML = '<div class="np-empty" style="font-size:12px;color:var(--text-muted);padding:4px 0;">Không có cảnh báo gần bạn.</div>';
+    return;
+  }
+
+  // Sắp xếp gần -> xa
+  validNearby.sort((a, b) => a.distance - b.distance);
+
+  // Giới hạn 5 cảnh báo gần nhất
+  const topNearby = validNearby.slice(0, 5);
+
+  listEl.innerHTML = topNearby.map(item => {
+    const inc = item.incident;
+    const meta = INCIDENT_TYPES[inc.type] || { emoji: '⚠️', label: 'Sự cố' };
     return `<div class="np-item">
-      <span class="np-label">${meta.emoji} ${n.label}</span>
-      <span class="np-dist">${n.dist}</span>
+      <span class="np-label">${meta.emoji} ${escapeHtml(meta.label)}</span>
+      <span class="np-dist">${formatDistance(item.distance)}</span>
     </div>`;
   }).join('');
 }
@@ -1044,6 +1025,8 @@ function swapLocations() {
   if (endLocation && isValidCoordinate(endLocation.lat, endLocation.lng))
     updateEndMarker(endLocation.lat, endLocation.lng, endLocation.label);
   else { if (endMarker) { map.removeLayer(endMarker); endMarker = null; } }
+
+  renderNearbyPanel();
 }
 
 /* ---------------------------------------------------------------
@@ -1076,13 +1059,16 @@ function initReportMap() {
   }).addTo(reportMap);
 
   // Click mini map → chọn vị trí
-  reportMap.on('click', e => selectReportLocation(e.latlng));
+  reportMap.on('click', e => {
+    hideReportSuggestions();
+    selectReportLocation(e.latlng);
+  });
 
   reportMapInitialized = true;
   setTimeout(() => reportMap?.invalidateSize(), 100);
 }
 
-function selectReportLocation(latlng) {
+function selectReportLocation(latlng, customLabel) {
   reportSelectedLatLng = { lat: latlng.lat, lng: latlng.lng };
 
   if (reportMarker) { reportMap.removeLayer(reportMarker); reportMarker = null; }
@@ -1102,11 +1088,17 @@ function selectReportLocation(latlng) {
     updateReportLocationText(pos.lat, pos.lng);
   });
 
-  updateReportLocationText(latlng.lat, latlng.lng);
+  if (customLabel) {
+    const input = document.getElementById('report-location');
+    if (input) input.value = customLabel;
+  } else {
+    updateReportLocationText(latlng.lat, latlng.lng);
+  }
 }
 
 async function updateReportLocationText(lat, lng) {
   const input = document.getElementById('report-location');
+  if (!input) return;
   input.value = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
   try {
     const res = await fetch('https://nominatim.openstreetmap.org/reverse?' + new URLSearchParams({
@@ -1128,8 +1120,11 @@ function useCurrentLocationForReport() {
     pos => {
       btn.disabled = false;
       const latlng = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      hideReportSuggestions();
       selectReportLocation(latlng);
-      reportMap.setView([latlng.lat, latlng.lng], 17);
+      if (reportMap) {
+        reportMap.setView([latlng.lat, latlng.lng], 17);
+      }
     },
     () => {
       btn.disabled = false;
@@ -1140,11 +1135,101 @@ function useCurrentLocationForReport() {
 }
 
 /* ---------------------------------------------------------------
+   22b. AUTOCOMPLETE VỊ TRÍ BÁO CÁO SỰ CỐ
+--------------------------------------------------------------- */
+function initReportLocationControls() {
+  const input = document.getElementById('report-location');
+  if (!input) return;
+
+  input.addEventListener('input', () => {
+    // Khi gõ tay, hủy tọa độ cũ cho tới khi chọn gợi ý hoặc click bản đồ
+    reportSelectedLatLng = null;
+    clearTimeout(reportSearchTimer);
+    const q = input.value.trim();
+    if (q.length < 2) {
+      hideReportSuggestions();
+      return;
+    }
+    reportSearchTimer = setTimeout(() => searchReportLocation(q), 400);
+  });
+}
+
+function hideReportSuggestions() {
+  const box = document.getElementById('report-suggestions');
+  if (!box) return;
+  box.classList.add('hidden');
+  box.innerHTML = '';
+  const input = document.getElementById('report-location');
+  if (input) input.setAttribute('aria-expanded', 'false');
+}
+
+async function searchReportLocation(query) {
+  const token = ++reportSearchToken;
+  try {
+    const res = await fetch('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({
+      format: 'json', q: query, limit: '5', countrycodes: 'vn', addressdetails: '1'
+    }), { headers: { 'Accept-Language': 'vi' } });
+    if (token !== reportSearchToken) return;
+    if (!res.ok) throw new Error();
+    const results = await res.json();
+    if (token !== reportSearchToken) return;
+    renderReportSuggestions(results);
+  } catch {
+    if (token !== reportSearchToken) return;
+    showToast('Không thể tìm địa điểm.');
+  }
+}
+
+function renderReportSuggestions(results) {
+  const box = document.getElementById('report-suggestions');
+  const input = document.getElementById('report-location');
+  if (!box || !input) return;
+
+  if (!results?.length) {
+    box.innerHTML = '<li class="suggestion-empty">Không tìm thấy địa điểm phù hợp.</li>';
+    box.classList.remove('hidden');
+    input.setAttribute('aria-expanded', 'true');
+    return;
+  }
+
+  box.innerHTML = results.map((r, i) => {
+    const s = shortenDisplayName(r.display_name);
+    const m = s.split(',')[0], sub = s.split(',').slice(1).join(',').trim();
+    return `<li class="suggestion-item" role="option" data-index="${i}">
+      <i class="fa-solid fa-location-dot"></i>
+      <div><div class="s-main">${escapeHtml(m)}</div>${sub ? `<div class="s-sub">${escapeHtml(sub)}</div>` : ''}</div>
+    </li>`;
+  }).join('');
+
+  box.classList.remove('hidden');
+  input.setAttribute('aria-expanded', 'true');
+
+  box.querySelectorAll('.suggestion-item[data-index]').forEach(item => {
+    item.addEventListener('click', () => {
+      const r = results[+item.dataset.index];
+      const lat = +r.lat;
+      const lng = +r.lon;
+      const label = shortenDisplayName(r.display_name);
+
+      input.value = label;
+      hideReportSuggestions();
+
+      selectReportLocation({ lat, lng }, label);
+      if (reportMap) {
+        reportMap.setView([lat, lng], 16);
+      }
+    });
+  });
+}
+
+/* ---------------------------------------------------------------
    23. MỞ / ĐÓNG MODAL BÁO CÁO
 --------------------------------------------------------------- */
 function openReportModal() {
   reportSelectedLatLng = null;
-  document.getElementById('report-location').value = 'Chưa chọn vị trí';
+  const input = document.getElementById('report-location');
+  if (input) input.value = '';
+  hideReportSuggestions();
   document.getElementById('report-modal').classList.remove('hidden');
 
   setTimeout(() => {
@@ -1162,10 +1247,13 @@ function openReportModal() {
 function closeReportModal() {
   document.getElementById('report-modal').classList.add('hidden');
   reportSelectedLatLng = null;
+  hideReportSuggestions();
   if (reportMarker && reportMap) {
     reportMap.removeLayer(reportMarker);
     reportMarker = null;
   }
+  const input = document.getElementById('report-location');
+  if (input) input.value = '';
   // Reset form
   document.getElementById('report-desc').value = '';
   // Reset level pills
@@ -1181,11 +1269,11 @@ document.getElementById('level-group').addEventListener('change', e => {
 });
 
 /* ---------------------------------------------------------------
-   24. SUBMIT REPORT — bắt buộc chọn vị trí trên mini map
+   24. SUBMIT REPORT — bắt buộc vị trí hợp lệ
 --------------------------------------------------------------- */
 function submitReport() {
-  if (!reportSelectedLatLng) {
-    showToast('Vui lòng chọn vị trí sự cố trên bản đồ.');
+  if (!reportSelectedLatLng || !isValidCoordinate(reportSelectedLatLng.lat, reportSelectedLatLng.lng)) {
+    showToast('Vui lòng chọn một địa chỉ hợp lệ từ danh sách gợi ý hoặc chọn vị trí trên bản đồ.');
     return;
   }
 
@@ -1193,15 +1281,23 @@ function submitReport() {
   const level = document.querySelector('input[name="level"]:checked').value;
   const desc = document.getElementById('report-desc').value.trim() || 'Không có mô tả.';
 
+  const reportedLat = reportSelectedLatLng.lat;
+  const reportedLng = reportSelectedLatLng.lng;
+
   addOrConfirmIncident({
     type, level,
-    lat: reportSelectedLatLng.lat,
-    lng: reportSelectedLatLng.lng,
+    lat: reportedLat,
+    lng: reportedLng,
     desc,
   });
 
   closeReportModal();
   showToast('Cảm ơn bạn! Báo cáo đã được ghi nhận.');
+
+  // Pan bản đồ chính về vị trí sự cố để người dùng thấy marker vừa xuất hiện
+  if (map) {
+    map.setView([reportedLat, reportedLng], Math.max(map.getZoom(), 15));
+  }
 }
 
 /* ---------------------------------------------------------------
@@ -1229,5 +1325,4 @@ function toggleSheet() {
 window.addEventListener('DOMContentLoaded', initMap);
 </script>
 </body>
-</html>
 </html>
