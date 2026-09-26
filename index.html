@@ -4,11 +4,6 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
 <title>SafeRoute – Đi an toàn hơn mỗi ngày</title>
-
-<!-- ============================================================
-     THƯ VIỆN NGOÀI (CDN) — Leaflet (bản đồ) + Font Awesome (icon)
-     Không dùng Google Maps vì cần API key, dùng OpenStreetMap miễn phí.
-     ============================================================ -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -20,15 +15,10 @@
 
 <div id="app">
 
-  <!-- ============================================================
-       HEADER
-       ============================================================ -->
+  <!-- ============================================================ HEADER -->
   <header id="header">
     <div class="brand">
-      <div class="brand-mark">
-        <i class="fa-solid fa-shield-halved">
-        </i>
-    </div>
+      <div class="brand-mark"><i class="fa-solid fa-shield-halved"></i></div>
       <div class="brand-text">
         <div class="name">Safe<span>Route</span></div>
         <div class="tagline">Đi an toàn hơn mỗi ngày</div>
@@ -42,49 +32,45 @@
 
   <div id="main-content">
 
-    <!-- ============================================================
-         SIDEBAR — form tìm đường + kết quả tuyến đường
-         ============================================================ -->
+    <!-- ============================================================ SIDEBAR -->
     <aside id="sidebar">
       <div class="sheet-handle" onclick="toggleSheet()"><span></span></div>
 
       <p class="panel-title">TÌM ĐƯỜNG</p>
       <div class="search-card">
         <div class="location-row">
+
+          <!-- Điểm bắt đầu — autocomplete Nominatim + GPS -->
           <div class="location-field start" id="start-field">
             <i class="fa-solid fa-location-dot"></i>
-            <input
-              id="start-input"
-              type="text"
-              placeholder="Điểm bắt đầu"
-              value="Chợ Bến Thành"
-              autocomplete="off"
-              role="combobox"
-              aria-autocomplete="list"
-              aria-expanded="false"
-              aria-controls="start-suggestions"
-            />
-            <button
-              type="button"
-              id="gps-btn"
-              class="location-action-btn"
-              title="Sử dụng vị trí hiện tại"
-              aria-label="Sử dụng vị trí hiện tại"
-            >
+            <input id="start-input" type="text" placeholder="Điểm bắt đầu"
+              value="Chợ Bến Thành" autocomplete="off"
+              role="combobox" aria-autocomplete="list"
+              aria-expanded="false" aria-controls="start-suggestions" />
+            <button type="button" id="gps-btn" class="location-action-btn"
+              title="Sử dụng vị trí hiện tại" aria-label="Sử dụng vị trí hiện tại">
               <i class="fa-solid fa-location-crosshairs"></i>
             </button>
-            <ul id="start-suggestions" class="suggestions-dropdown hidden" role="listbox" aria-label="Gợi ý điểm bắt đầu"></ul>
+            <ul id="start-suggestions" class="suggestions-dropdown hidden"
+              role="listbox" aria-label="Gợi ý điểm bắt đầu"></ul>
           </div>
-          <div class="location-field end">
+
+          <!-- Điểm đến — autocomplete Nominatim tương tự -->
+          <div class="location-field end" id="end-field">
             <i class="fa-solid fa-flag-checkered"></i>
-            <input id="end-input" type="text" placeholder="Điểm đến" value="Landmark 81" />
+            <input id="end-input" type="text" placeholder="Điểm đến"
+              autocomplete="off" role="combobox" aria-autocomplete="list"
+              aria-expanded="false" aria-controls="end-suggestions" />
+            <ul id="end-suggestions" class="suggestions-dropdown hidden"
+              role="listbox" aria-label="Gợi ý điểm đến"></ul>
           </div>
+
           <button class="swap-btn" onclick="swapLocations()" title="Đảo chiều">
             <i class="fa-solid fa-arrow-up-arrow-down"></i>
           </button>
         </div>
 
-        <!-- Chế độ tìm đường: quyết định hệ số alpha trong công thức weight -->
+        <!-- Chế độ: alpha quyết định weight = dist*(1 + alpha*risk) -->
         <div class="mode-group" id="mode-group">
           <label class="mode-option" data-mode="fastest">
             <input type="radio" name="mode" value="fastest" />
@@ -104,42 +90,30 @@
         </div>
 
         <button class="find-btn" id="find-btn" onclick="onFindRouteClick()">
-          <i class="fa-solid fa-route" id="find-btn-icon"></i>
+          <i class="fa-solid fa-route"></i>
           <span id="find-btn-label">Tìm đường an toàn</span>
         </button>
       </div>
 
-      <!-- Kết quả 3 tuyến đường demo, được renderRoutes() điền vào -->
       <div id="route-results"></div>
     </aside>
 
-    <!-- ============================================================
-         BẢN ĐỒ (Leaflet + OpenStreetMap)
-         ============================================================ -->
+    <!-- ============================================================ MAP -->
     <div id="map-container">
       <div id="map"></div>
 
-      <!-- Chú thích mức độ rủi ro -->
       <div id="legend">
         <div class="legend-title">Mức độ rủi ro</div>
-        <div class="legend-item">
-            <span class="dot" style="background:var(--risk-low)"></span>Rủi ro thấp</div>
-        <div class="legend-item">
-            <span class="dot" style="background:var(--risk-mid)"></span>Rủi ro trung bình</div>
-        <div class="legend-item">
-            <span class="dot" style="background:var(--risk-high)"></span>Rủi ro cao</div>
+        <div class="legend-item"><span class="dot" style="background:var(--risk-low)"></span>Rủi ro thấp</div>
+        <div class="legend-item"><span class="dot" style="background:var(--risk-mid)"></span>Rủi ro trung bình</div>
+        <div class="legend-item"><span class="dot" style="background:var(--risk-high)"></span>Rủi ro cao</div>
       </div>
 
-      <!-- Cảnh báo gần bạn -->
       <div id="nearby-panel">
-        <div class="np-title">
-            <i class="fa-solid fa-triangle-exclamation"></i>Cảnh báo gần bạn
-        </div>
-        <div id="nearby-list">
-        </div>
+        <div class="np-title"><i class="fa-solid fa-triangle-exclamation"></i>Cảnh báo gần bạn</div>
+        <div id="nearby-list"></div>
       </div>
 
-      <!-- Nút nổi báo cáo sự cố -->
       <button id="report-fab" onclick="openReportModal()">
         <i class="fa-solid fa-circle-plus"></i> Báo cáo sự cố
       </button>
@@ -147,19 +121,12 @@
   </div>
 </div>
 
-<!-- ============================================================
-     MODAL BÁO CÁO SỰ CỐ
-     ============================================================ -->
+<!-- ============================================================ MODAL BÁO CÁO SỰ CỐ -->
 <div class="modal-overlay hidden" id="report-modal">
   <div class="modal-box">
     <div class="modal-head">
       <h3>Báo cáo sự cố</h3>
       <button class="modal-close" onclick="closeReportModal()"><i class="fa-solid fa-xmark"></i></button>
-    </div>
-
-    <div class="hint-box">
-      <i class="fa-solid fa-circle-info"></i>
-      Chạm vào bản đồ để chọn đúng vị trí sự cố (demo dùng tâm bản đồ nếu không chọn).
     </div>
 
     <div class="field-group">
@@ -184,14 +151,21 @@
       </div>
     </div>
 
+    <!-- Vị trí — mini map riêng, không dùng bản đồ chính -->
     <div class="field-group">
-      <label>Mô tả</label>
-      <textarea id="report-desc" placeholder="Mô tả chi tiết sự cố..."></textarea>
+      <label>Vị trí sự cố</label>
+      <div id="report-mini-map"></div>
+      <button type="button" id="report-current-location" class="report-location-gps"
+        onclick="useCurrentLocationForReport()">
+        <i class="fa-solid fa-location-crosshairs"></i>
+        Vị trí hiện tại
+      </button>
+      <input type="text" id="report-location" value="Chưa chọn vị trí" readonly />
     </div>
 
     <div class="field-group">
-      <label>Vị trí</label>
-      <input type="text" id="report-location" placeholder="Chạm vào bản đồ để chọn vị trí" readonly />
+      <label>Mô tả</label>
+      <textarea id="report-desc" placeholder="Mô tả chi tiết sự cố..."></textarea>
     </div>
 
     <button class="submit-btn" onclick="submitReport()">Gửi báo cáo</button>
@@ -200,262 +174,423 @@
 
 <div class="toast" id="toast"><i class="fa-solid fa-circle-check"></i><span id="toast-text"></span></div>
 
-<!-- ============================================================
-     THƯ VIỆN LEAFLET
-     ============================================================ -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
 <script>
 /* ================================================================
-   SAFEROUTE — LOGIC DEMO (FRONTEND ONLY)
+   SAFEROUTE — ROUTING THẬT (OSRM) + CONFIDENCE DECAY
    ----------------------------------------------------------------
-   GHI CHÚ THUẬT TOÁN (cho sinh viên đọc/chỉnh sửa):
+   Kiến trúc:
+   1. Autocomplete Nominatim (start & end) với debounce 400ms
+   2. OSRM routing API → polyline theo đường giao thông thật
+   3. Risk score từ khoảng cách incident đến route (Haversine)
+   4. Báo cáo sự cố qua mini map riêng (Leaflet instance độc lập)
+   5. Confidence = 50% khi tạo mới, tăng khi có người báo thêm
+   6. Decay theo half-life riêng cho từng loại sự cố
+   7. Incident biến mất khi confidence → 0
 
-   Bản đồ đường đi được mô hình hoá như một ĐỒ THỊ (Graph):
-     - Node  = giao lộ (điểm giao nhau giữa các con đường)
-     - Edge  = đoạn đường nối giữa 2 giao lộ
-
-   Mỗi Edge có 2 thuộc tính:
-     - distance  : độ dài đoạn đường (km)
-     - riskScore : mức rủi ro của đoạn đường, chuẩn hoá về [0,1]
-
-   Trọng số (weight) của mỗi Edge dùng để tìm đường được tính theo công thức:
-
-        weight = distance * (1 + alpha * riskScore)
-
-   Trong đó:
-     - alpha càng lớn thì thuật toán càng "ngại" đi vào đoạn đường rủi ro cao
-     - alpha = 0  → chế độ "Nhanh nhất"   (bỏ qua rủi ro)
-     - alpha = 1  → chế độ "Cân bằng"
-     - alpha = 3  → chế độ "An toàn nhất" (ưu tiên né rủi ro rất mạnh)
-
-   Ở phiên bản PROTOTYPE này, chúng ta CHƯA dựng đồ thị thật với hàng trăm
-   giao lộ + chưa chạy Dijkstra/A*. Thay vào đó, findSafeRoute() sinh ra
-   3 tuyến đường minh hoạ (nội suy toạ độ giữa điểm bắt đầu và điểm đến
-   thật) tương ứng với 3 alpha ở trên, để demo giao diện & luồng tương
-   tác. Khi có dữ liệu OSM thật (danh sách node/edge của thành phố), ta
-   chỉ cần thay phần bên trong findSafeRoute() bằng thuật toán Dijkstra/A*
-   chạy trên weight ở công thức trên — toàn bộ phần giao diện,
-   renderRoutes(), renderIncidents() có thể giữ nguyên.
+   Về Backend:
+   Hiện tại là frontend demo (mảng local). Để deploy thật, thay
+   addOrConfirmIncident() bằng POST /api/incidents và GET /api/incidents
+   từ server — server sẽ là nguồn sự thật duy nhất về confidence,
+   reporterIds, decay, và persistence.
 ================================================================ */
 
 /* ---------------------------------------------------------------
-   1. DỮ LIỆU CẤU HÌNH LOẠI SỰ CỐ
+   DEMO USER ID — thay bằng user ID từ auth backend khi triển khai thật
+   Dùng để tránh cùng 1 người spam +50% liên tục.
 --------------------------------------------------------------- */
-const INCIDENT_TYPES = {
-  accident:      { label: 'Tai nạn giao thông',        emoji: '🔴', color: '#e3492c' },
-  flood:         { label: 'Ngập nước',                 emoji: '🔵', color: '#2f7ee0' },
-  construction:  { label: 'Công trình đang thi công',  emoji: '🟠', color: '#f08a1c' },
-  traffic:       { label: 'Ùn tắc',                    emoji: '🟡', color: '#f4b400' },
-  danger:        { label: 'Khu vực nguy hiểm',         emoji: '⚠️', color: '#8a4fe0' },
-  damaged_road:  { label: 'Đường hư hỏng',             emoji: '🟤', color: '#8d6e63' },
-  obstacle:      { label: 'Chướng ngại vật',           emoji: '🟣', color: '#7c4dff' }
+const DEMO_USER_ID = 'demo-user-' + Math.random().toString(36).slice(2, 9);
+
+/* ---------------------------------------------------------------
+   CONSTANTS
+--------------------------------------------------------------- */
+// Ngưỡng khoảng cách để gộp incident (cùng loại, trong bán kính này)
+const INCIDENT_MERGE_RADIUS_METERS = 100;
+
+// Ngưỡng ảnh hưởng của incident đến risk score tuyến đường
+const RISK_IMPACT = {
+  STRONG_THRESHOLD_M: 100,   // < 100m → ảnh hưởng mạnh
+  MEDIUM_THRESHOLD_M: 300,   // 100–300m → ảnh hưởng vừa
+  STRONG_WEIGHT: 1.0,
+  MEDIUM_WEIGHT: 0.4,
 };
 
+// Trọng số loại sự cố trong risk score
+const INCIDENT_TYPE_WEIGHT = {
+  accident: 0.30, flood: 0.25, danger: 0.20,
+  construction: 0.15, traffic: 0.12,
+  damaged_road: 0.10, obstacle: 0.08,
+};
+
+// Trọng số mức độ trong risk score
+const INCIDENT_LEVEL_WEIGHT = { cao: 1.0, trungbinh: 0.5, thap: 0.2 };
+
+// Half-life decay: thời gian để confidence giảm 50% (giờ)
+const INCIDENT_DECAY_CONFIG = {
+  flood:        { halfLifeHours: 3    },  // ngập nước → vài giờ
+  accident:     { halfLifeHours: 1    },  // tai nạn → nhanh
+  construction: { halfLifeHours: 72   },  // công trình → nhiều ngày
+  traffic:      { halfLifeHours: 0.5  },  // ùn tắc → rất nhanh
+  damaged_road: { halfLifeHours: 168  },  // đường hư → rất lâu
+  danger:       { halfLifeHours: 168  },  // khu nguy hiểm → rất lâu
+  obstacle:     { halfLifeHours: 6    },  // chướng ngại → vài giờ
+};
+
+// Màu polyline cho từng route index
+const ROUTE_COLORS = ['#2f7ee0', '#f08a1c', '#12b76a', '#8a4fe0', '#e3492c'];
+
+/* ---------------------------------------------------------------
+   1. CẤU HÌNH LOẠI SỰ CỐ
+--------------------------------------------------------------- */
+const INCIDENT_TYPES = {
+  accident:     { label: 'Tai nạn giao thông',       emoji: '🔴', color: '#e3492c' },
+  flood:        { label: 'Ngập nước',                emoji: '🔵', color: '#2f7ee0' },
+  construction: { label: 'Công trình đang thi công', emoji: '🟠', color: '#f08a1c' },
+  traffic:      { label: 'Ùn tắc',                   emoji: '🟡', color: '#f4b400' },
+  danger:       { label: 'Khu vực nguy hiểm',        emoji: '⚠️', color: '#8a4fe0' },
+  damaged_road: { label: 'Đường hư hỏng',            emoji: '🟤', color: '#8d6e63' },
+  obstacle:     { label: 'Chướng ngại vật',          emoji: '🟣', color: '#7c4dff' },
+};
 const LEVEL_LABEL = { thap: 'Thấp', trungbinh: 'Trung bình', cao: 'Cao' };
 
 /* ---------------------------------------------------------------
-   2. DỮ LIỆU DEMO — SỰ CỐ CỘNG ĐỒNG BÁO CÁO (khu vực TP.HCM)
-   Mỗi incident tương lai sẽ là input để tính riskScore cho các
-   đoạn đường (edge) gần nó — xem công thức renderRoutes() bên dưới.
+   2. DỮ LIỆU DEMO SỰ CỐ — với timestamp thật + confidence
+   (tương đương dữ liệu có thể lấy từ GET /api/incidents)
 --------------------------------------------------------------- */
+const NOW = Date.now();
 let incidents = [
-  { id: 1, type: 'flood',        level: 'cao',       lat: 10.7769, lng: 106.6982, time: '15 phút trước', confirms: 24, desc: 'Nước ngập khoảng 30cm, xe máy khó di chuyển.' },
-  { id: 2, type: 'accident',     level: 'cao',       lat: 10.7891, lng: 106.7020, time: '32 phút trước', confirms: 18, desc: 'Va chạm giữa 2 xe máy, đang chờ xử lý.' },
-  { id: 3, type: 'construction', level: 'trungbinh', lat: 10.7820, lng: 106.6955, time: '2 giờ trước',   confirms: 9,  desc: 'Rào chắn thi công chiếm 1 làn đường.' },
-  { id: 4, type: 'traffic',      level: 'trungbinh', lat: 10.7735, lng: 106.7050, time: '5 phút trước',  confirms: 31, desc: 'Ùn tắc kéo dài do giờ cao điểm.' },
-  { id: 5, type: 'danger',       level: 'cao',       lat: 10.8010, lng: 106.7110, time: '1 ngày trước',  confirms: 14, desc: 'Khu vực thường xuyên xảy ra cướp giật ban đêm.' },
-  { id: 6, type: 'damaged_road', level: 'thap',      lat: 10.7690, lng: 106.6900, time: '3 giờ trước',   confirms: 7,  desc: 'Mặt đường có nhiều ổ gà.' },
-  { id: 7, type: 'flood',        level: 'trungbinh', lat: 10.7940, lng: 106.6870, time: '40 phút trước', confirms: 11, desc: 'Ngập cục bộ tại điểm trũng.' },
-  { id: 8, type: 'obstacle',     level: 'thap',      lat: 10.7660, lng: 106.7080, time: '20 phút trước', confirms: 5,  desc: 'Cây đổ chắn một phần lòng đường.' }
+  {
+    id: 'demo-1', type: 'flood', level: 'cao',
+    lat: 10.7769, lng: 106.6982,
+    desc: 'Nước ngập khoảng 30cm, xe máy khó di chuyển.',
+    confidence: 100, reporterCount: 24,
+    reporterIds: ['u1','u2','u3'],
+    createdAt: NOW - 15*60*1000,
+    lastConfirmedAt: NOW - 15*60*1000,
+  },
+  {
+    id: 'demo-2', type: 'accident', level: 'cao',
+    lat: 10.7891, lng: 106.7020,
+    desc: 'Va chạm giữa 2 xe máy, đang chờ xử lý.',
+    confidence: 100, reporterCount: 18,
+    reporterIds: ['u1','u4'],
+    createdAt: NOW - 32*60*1000,
+    lastConfirmedAt: NOW - 32*60*1000,
+  },
+  {
+    id: 'demo-3', type: 'construction', level: 'trungbinh',
+    lat: 10.7820, lng: 106.6955,
+    desc: 'Rào chắn thi công chiếm 1 làn đường.',
+    confidence: 100, reporterCount: 9,
+    reporterIds: ['u5'],
+    createdAt: NOW - 2*60*60*1000,
+    lastConfirmedAt: NOW - 2*60*60*1000,
+  },
+  {
+    id: 'demo-4', type: 'traffic', level: 'trungbinh',
+    lat: 10.7735, lng: 106.7050,
+    desc: 'Ùn tắc kéo dài do giờ cao điểm.',
+    confidence: 100, reporterCount: 31,
+    reporterIds: ['u6','u7'],
+    createdAt: NOW - 5*60*1000,
+    lastConfirmedAt: NOW - 5*60*1000,
+  },
+  {
+    id: 'demo-5', type: 'danger', level: 'cao',
+    lat: 10.8010, lng: 106.7110,
+    desc: 'Khu vực thường xuyên xảy ra cướp giật ban đêm.',
+    confidence: 100, reporterCount: 14,
+    reporterIds: ['u8'],
+    createdAt: NOW - 24*60*60*1000,
+    lastConfirmedAt: NOW - 24*60*60*1000,
+  },
+  {
+    id: 'demo-6', type: 'damaged_road', level: 'thap',
+    lat: 10.7690, lng: 106.6900,
+    desc: 'Mặt đường có nhiều ổ gà.',
+    confidence: 100, reporterCount: 7,
+    reporterIds: ['u9'],
+    createdAt: NOW - 3*60*60*1000,
+    lastConfirmedAt: NOW - 3*60*60*1000,
+  },
+  {
+    id: 'demo-7', type: 'flood', level: 'trungbinh',
+    lat: 10.7940, lng: 106.6870,
+    desc: 'Ngập cục bộ tại điểm trũng.',
+    confidence: 100, reporterCount: 11,
+    reporterIds: ['u10'],
+    createdAt: NOW - 40*60*1000,
+    lastConfirmedAt: NOW - 40*60*1000,
+  },
+  {
+    id: 'demo-8', type: 'obstacle', level: 'thap',
+    lat: 10.7660, lng: 106.7080,
+    desc: 'Cây đổ chắn một phần lòng đường.',
+    confidence: 100, reporterCount: 5,
+    reporterIds: ['u11'],
+    createdAt: NOW - 20*60*1000,
+    lastConfirmedAt: NOW - 20*60*1000,
+  },
 ];
 
 /* ---------------------------------------------------------------
-   3. DỮ LIỆU CẤU HÌNH 3 CHẾ ĐỘ TUYẾN ĐƯỜNG (KHÔNG chứa toạ độ cố định)
-   Trước đây mỗi tuyến có `coords` hard-code quanh Chợ Bến Thành nên dù
-   đổi điểm bắt đầu/đến, tuyến vẽ ra vẫn luôn ở chỗ cũ — đây là lỗi đã sửa.
-   Giờ toạ độ tuyến được SINH RA động trong findSafeRoute() dựa trên
-   startLocation/endLocation hiện tại (xem createDemoRouteCoords() bên dưới).
+   3. TRẠNG THÁI CHUNG
 --------------------------------------------------------------- */
-const ROUTE_MODE_CONFIGS = [
-  { id: 'A', name: 'NHANH NHẤT',   mode: 'fastest',  alpha: 0, distance: 5.2, duration: 14, riskScore: 72, color: '#e3492c', routeIndex: 0 },
-  { id: 'B', name: 'CÂN BẰNG',     mode: 'balanced', alpha: 1, distance: 5.8, duration: 16, riskScore: 35, color: '#f4b400', routeIndex: 1 },
-  { id: 'C', name: 'AN TOÀN NHẤT', mode: 'safest',   alpha: 3, distance: 6.4, duration: 19, riskScore: 12, color: '#12b76a', routeIndex: 2 }
-];
-
-/* ---------------------------------------------------------------
-   4. TRẠNG THÁI CHUNG (state)
---------------------------------------------------------------- */
-let map;
-let incidentLayerGroup;
-let routeLayerGroup;
+let map, incidentLayerGroup, routeLayerGroup;
 let selectedMode = 'balanced';
-let pendingReportLatLng = null; // vị trí người dùng chọn khi báo cáo
 
-/* ---- State cho tính năng CHỌN ĐIỂM BẮT ĐẦU (GPS / click bản đồ / tìm kiếm) ---- */
+// Start / end
 let startLocation = { lat: 10.7725, lng: 106.6980, label: 'Chợ Bến Thành', source: 'default' };
-let endLocation = null;          // dự phòng cho việc chọn điểm đến bằng toạ độ (chưa triển khai ở bản này)
+let endLocation = null;
 let startMarker = null;
-let selectingStartOnMap = false; // true khi người dùng đang chờ click bản đồ để chọn điểm bắt đầu
+let endMarker = null;
+let selectingStartOnMap = false;
 let startSearchTimer = null;
-let startSearchToken = 0;        // đảm bảo chỉ áp dụng kết quả của lần tìm kiếm mới nhất
-let endSearchToken = 0;          // đảm bảo chỉ dùng kết quả geocode điểm đến mới nhất
-let isFindingRoute = false;      // chặn không cho bấm "Tìm đường" nhiều lần cùng lúc
+let endSearchTimer = null;
+let startSearchToken = 0;
+let endSearchToken = 0;
+let isFindingRoute = false;
+let currentRoutes = [];
+
+// Mini map báo cáo — hoàn toàn độc lập với bản đồ chính
+let reportMap = null;
+let reportMarker = null;
+let reportMapInitialized = false;
+let reportSelectedLatLng = null;  // tọa độ người dùng chọn trên mini map
 
 /* ---------------------------------------------------------------
-   5. KHỞI TẠO BẢN ĐỒ (mặc định trung tâm TP.HCM)
+   4. UTILITY
+--------------------------------------------------------------- */
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, ch =>
+    ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[ch]));
+}
+
+function shortenDisplayName(dn) {
+  return String(dn).split(',').map(p => p.trim()).slice(0, 3).join(', ');
+}
+
+function isValidCoordinate(lat, lng) {
+  return Number.isFinite(+lat) && Number.isFinite(+lng)
+    && +lat >= -90 && +lat <= 90 && +lng >= -180 && +lng <= 180;
+}
+
+/** Khoảng cách Haversine (m) */
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000, rad = x => x * Math.PI / 180;
+  const dLat = rad(lat2 - lat1), dLng = rad(lng2 - lng1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(rad(lat1))*Math.cos(rad(lat2))*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+// Alias đồng nhất với tên dùng trong addOrConfirmIncident
+const distanceMeters = haversineMeters;
+
+/** Tìm khoảng cách nhỏ nhất từ điểm đến polyline */
+function minDistanceToPolyline(lat, lng, coords) {
+  let min = Infinity;
+  for (const c of coords) {
+    const d = haversineMeters(lat, lng, c[0], c[1]);
+    if (d < min) min = d;
+  }
+  return min;
+}
+
+/** Thời gian tương đối */
+function formatRelativeTime(ts) {
+  const mins = Math.floor((Date.now() - ts) / 60000);
+  if (mins < 1) return 'Vừa xong';
+  if (mins < 60) return `${mins} phút trước`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} giờ trước`;
+  return `${Math.floor(hrs / 24)} ngày trước`;
+}
+
+/* ---------------------------------------------------------------
+   5. CONFIDENCE — decay và tính toán
+--------------------------------------------------------------- */
+/**
+ * Tính confidence hiện tại của incident dựa trên thời gian thực.
+ * Công thức: C(t) = C_last * 0.5^(elapsedHours / halfLife)
+ * Lưu thời gian thay vì giảm theo timer → đúng kể cả khi đóng/mở lại trình duyệt.
+ */
+function calculateCurrentConfidence(incident, now = Date.now()) {
+  const cfg = INCIDENT_DECAY_CONFIG[incident.type] ?? { halfLifeHours: 24 };
+  const lastActivity = incident.lastConfirmedAt ?? incident.createdAt;
+  const elapsedHours = (now - lastActivity) / (1000 * 60 * 60);
+  const c = incident.confidence * Math.pow(0.5, elapsedHours / cfg.halfLifeHours);
+  return Math.max(0, Math.min(100, c));
+}
+
+/** Màu confidence */
+function getConfidenceColor(c) {
+  if (c >= 70) return 'var(--risk-low)';
+  if (c >= 40) return 'var(--risk-mid)';
+  return 'var(--risk-high)';
+}
+
+/* ---------------------------------------------------------------
+   6. CLEANUP INCIDENTS HẾT HẠN
+--------------------------------------------------------------- */
+function cleanupExpiredIncidents() {
+  const now = Date.now();
+  const before = incidents.length;
+  incidents = incidents.filter(inc => {
+    const c = calculateCurrentConfidence(inc, now);
+    inc.confidence = c; // cập nhật vào object để render chính xác
+    return c > 0.1;
+  });
+  if (incidents.length !== before) renderIncidents();
+}
+
+// Chạy định kỳ mỗi 60 giây
+setInterval(cleanupExpiredIncidents, 60 * 1000);
+
+/* ---------------------------------------------------------------
+   7. addOrConfirmIncident — logic báo cáo và gộp
+   Khi triển khai thật: thay bằng POST /api/incidents
+--------------------------------------------------------------- */
+function addOrConfirmIncident(data) {
+  cleanupExpiredIncidents();
+
+  // Tìm incident cùng loại, gần vị trí, còn sống
+  const nearby = incidents.find(inc => {
+    if (inc.type !== data.type) return false;
+    const c = calculateCurrentConfidence(inc);
+    if (c <= 0) return false;
+    return distanceMeters(inc.lat, inc.lng, data.lat, data.lng) <= INCIDENT_MERGE_RADIUS_METERS;
+  });
+
+  if (nearby) {
+    // Chống spam: không cộng nếu cùng user
+    if (nearby.reporterIds && nearby.reporterIds.includes(DEMO_USER_ID)) {
+      showToast('Bạn đã báo cáo sự cố này rồi.');
+      return;
+    }
+    // Cộng +50% vào confidence hiện tại (sau decay)
+    const currentC = calculateCurrentConfidence(nearby);
+    nearby.confidence = Math.min(100, currentC + 50);
+    nearby.lastConfirmedAt = Date.now();
+    nearby.reporterCount = (nearby.reporterCount ?? 1) + 1;
+    nearby.reporterIds = [...(nearby.reporterIds ?? []), DEMO_USER_ID];
+    renderIncidents();
+    showToast(`Đã xác nhận sự cố. Độ tin cậy: ${Math.round(nearby.confidence)}%`);
+    return;
+  }
+
+  // Tạo incident mới — confidence bắt đầu 50%
+  const newInc = {
+    id: (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : 'inc-' + Date.now(),
+    type: data.type,
+    level: data.level,
+    lat: data.lat,
+    lng: data.lng,
+    desc: data.desc,
+    confidence: 50,
+    reporterCount: 1,
+    reporterIds: [DEMO_USER_ID],
+    createdAt: Date.now(),
+    lastConfirmedAt: Date.now(),
+  };
+  incidents.push(newInc);
+  renderIncidents();
+}
+
+/* ---------------------------------------------------------------
+   8. KHỞI TẠO BẢN ĐỒ CHÍNH
 --------------------------------------------------------------- */
 function initMap() {
   map = L.map('map', { zoomControl: false }).setView([10.7769, 106.7009], 14);
-
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; SafeRoute built by IzekNguyen',
-    maxZoom: 19
+    attribution: '&copy; SafeRoute built by IzekNguyen', maxZoom: 19
   }).addTo(map);
-
   L.control.zoom({ position: 'bottomright' }).addTo(map);
 
   incidentLayerGroup = L.layerGroup().addTo(map);
   routeLayerGroup = L.layerGroup().addTo(map);
 
-  // Thứ tự xử lý click bản đồ (không được xung đột nhau):
-  //   1) Modal báo cáo sự cố đang mở  -> chọn vị trí báo cáo (hành vi cũ, giữ nguyên)
-  //   2) Đang ở chế độ chọn điểm bắt đầu -> chọn start location
-  //   3) Ngoài 2 trường hợp trên -> không làm gì
+  // Bản đồ chính: chỉ xử lý click để chọn điểm bắt đầu (chế độ selectingStartOnMap)
+  // KHÔNG xử lý click báo cáo sự cố — modal dùng mini map riêng
   map.on('click', function (e) {
-    const modal = document.getElementById('report-modal');
-    if (!modal.classList.contains('hidden')) {
-      pendingReportLatLng = e.latlng;
-      document.getElementById('report-location').value =
-        e.latlng.lat.toFixed(5) + ', ' + e.latlng.lng.toFixed(5);
-      return;
-    }
-    if (selectingStartOnMap) {
-      selectStartFromMap(e.latlng);
-      return;
-    }
-    // không thuộc 2 trường hợp trên -> bỏ qua
+    if (selectingStartOnMap) { selectStartFromMap(e.latlng); }
   });
 
   renderIncidents();
   renderNearbyPanel();
 
-  // Hiển thị sẵn marker cho điểm bắt đầu mặc định + gắn sự kiện GPS/tìm kiếm
-  if (startLocation) {
-    updateStartMarker(startLocation.lat, startLocation.lng, startLocation.label);
-  }
+  if (startLocation) updateStartMarker(startLocation.lat, startLocation.lng, startLocation.label);
   initStartLocationControls();
   initEndLocationControls();
 }
 
 /* ---------------------------------------------------------------
-   6. HÀM TÍNH RISK SCORE (mô phỏng)
-   Công thức chuẩn hoá đề xuất trong đồ án:
-
-     riskScore = floodRisk + accidentRisk + constructionRisk
-                 + trafficRisk + communityReports   (rồi chuẩn hoá về 0→1)
-
-   Ở bản demo, mỗi tuyến đã có riskScore mẫu dựng sẵn (ROUTE_MODE_CONFIGS),
-   hàm này minh hoạ cách một hệ thống thật sẽ tổng hợp điểm rủi ro
-   từ các sự cố cộng đồng nằm gần tuyến đường.
+   9. MARKER ĐIỂM BẮT ĐẦU & ĐIỂM ĐẾN
 --------------------------------------------------------------- */
-function calculateRiskScore(route) {
-  // ---- Phiên bản DEMO: dùng điểm số đã gán sẵn cho tuyến ----
-  if (route && typeof route.riskScore === 'number') return route.riskScore;
-
-  // ---- Gợi ý công thức thật (chưa dùng trong demo) ----
-  // const floodRisk        = countNearbyIncidents(route, 'flood')        * 0.25;
-  // const accidentRisk     = countNearbyIncidents(route, 'accident')     * 0.30;
-  // const constructionRisk = countNearbyIncidents(route, 'construction') * 0.15;
-  // const trafficRisk      = countNearbyIncidents(route, 'traffic')      * 0.15;
-  // const communityReports = countNearbyIncidents(route, 'danger')       * 0.15;
-  // const raw = floodRisk + accidentRisk + constructionRisk + trafficRisk + communityReports;
-  // return Math.min(100, Math.round(raw * 100)); // chuẩn hoá 0-100
-  return 50;
-}
-
-/* ---------------------------------------------------------------
-   6b. CHỌN ĐIỂM BẮT ĐẦU — GPS / click bản đồ / tìm kiếm Nominatim
-   startLocation luôn ở dạng { lat, lng, label, source } để sau này
-   findSafeRoute() có thể dùng toạ độ thật thay vì chỉ text.
---------------------------------------------------------------- */
-
-// Thoát HTML cơ bản trước khi chèn dữ liệu từ Nominatim vào innerHTML
-function escapeHtml(str) {
-  return String(str).replace(/[&<>"']/g, ch => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[ch]));
-}
-
-// Rút gọn display_name của Nominatim (giữ 3 phần đầu) cho gọn UI
-function shortenDisplayName(displayName) {
-  const parts = String(displayName).split(',').map(p => p.trim());
-  return parts.slice(0, 3).join(', ');
-}
-
-// Gán điểm bắt đầu mới (dùng chung cho cả GPS / click bản đồ / tìm kiếm)
 function setStartLocation(lat, lng, label, source) {
   startLocation = { lat, lng, label, source };
   document.getElementById('start-input').value = label;
   updateStartMarker(lat, lng, label);
 }
 
-// Vẽ/di chuyển marker điểm bắt đầu — icon khác hẳn marker sự cố
 function updateStartMarker(lat, lng, label) {
-  if (startMarker) {
-    map.removeLayer(startMarker);
-    startMarker = null;
-  }
+  if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
   const icon = L.divIcon({
     className: '',
     html: '<div class="start-marker-icon"><i class="fa-solid fa-person-walking"></i></div>',
-    iconSize: [34, 34],
-    iconAnchor: [17, 32]
+    iconSize: [34, 34], iconAnchor: [17, 32]
   });
   startMarker = L.marker([lat, lng], { icon, zIndexOffset: 1000 }).addTo(map);
   startMarker.bindPopup(`
     <div class="popup-box">
       <div class="p-head"><i class="fa-solid fa-location-dot" style="color:var(--primary)"></i> Điểm bắt đầu</div>
       <div class="p-row"><b>${escapeHtml(label)}</b></div>
-    </div>
-  `);
+    </div>`);
 }
 
-/* ---- 1) GPS: chỉ xin quyền khi người dùng bấm nút, không tự động khi load ---- */
+function updateEndMarker(lat, lng, label) {
+  if (endMarker) { map.removeLayer(endMarker); endMarker = null; }
+  const icon = L.divIcon({
+    className: '',
+    html: '<div class="end-marker-icon"><i class="fa-solid fa-flag-checkered"></i></div>',
+    iconSize: [34, 34], iconAnchor: [17, 32]
+  });
+  endMarker = L.marker([lat, lng], { icon, zIndexOffset: 1000 }).addTo(map);
+  endMarker.bindPopup(`
+    <div class="popup-box">
+      <div class="p-head"><i class="fa-solid fa-flag-checkered" style="color:var(--c-accident)"></i> Điểm đến</div>
+      <div class="p-row"><b>${escapeHtml(label)}</b></div>
+    </div>`);
+}
+
+/* ---------------------------------------------------------------
+   10. AUTOCOMPLETE ĐIỂM BẮT ĐẦU
+--------------------------------------------------------------- */
 function handleGpsClick() {
-  if (!navigator.geolocation) {
-    showToast('Trình duyệt không hỗ trợ định vị.');
-    return;
-  }
-  if (!window.isSecureContext) {
-    showToast('GPS yêu cầu HTTPS hoặc localhost.');
-    return;
-  }
-
-  const gpsBtn = document.getElementById('gps-btn');
-  gpsBtn.classList.add('loading');
-
+  if (!navigator.geolocation) { showToast('Trình duyệt không hỗ trợ định vị.'); return; }
+  const btn = document.getElementById('gps-btn');
+  btn.classList.add('loading');
   navigator.geolocation.getCurrentPosition(
-    function (pos) {
-      gpsBtn.classList.remove('loading');
-      const { latitude, longitude } = pos.coords;
-      setStartLocation(latitude, longitude, 'Vị trí hiện tại', 'gps');
-      map.setView([latitude, longitude], 16);
+    pos => {
+      btn.classList.remove('loading');
+      setStartLocation(pos.coords.latitude, pos.coords.longitude, 'Vị trí hiện tại', 'gps');
+      map.setView([pos.coords.latitude, pos.coords.longitude], 16);
       showToast('Đã lấy vị trí hiện tại.');
     },
-    function (err) {
-      gpsBtn.classList.remove('loading');
-      let msg = 'Không thể lấy vị trí hiện tại.';
-      if (err.code === err.PERMISSION_DENIED) msg = 'Bạn chưa cho phép truy cập vị trí.';
-      else if (err.code === err.POSITION_UNAVAILABLE) msg = 'Không thể xác định vị trí hiện tại.';
-      else if (err.code === err.TIMEOUT) msg = 'Lấy vị trí quá lâu, vui lòng thử lại.';
-      showToast(msg);
+    err => {
+      btn.classList.remove('loading');
+      const msgs = {
+        [err.PERMISSION_DENIED]: 'Bạn chưa cho phép truy cập vị trí.',
+        [err.POSITION_UNAVAILABLE]: 'Không thể xác định vị trí hiện tại.',
+        [err.TIMEOUT]: 'Lấy vị trí quá lâu, vui lòng thử lại.',
+      };
+      showToast(msgs[err.code] ?? 'Không thể lấy vị trí hiện tại.');
     },
     { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
   );
 }
 
-/* ---- 2) Chọn điểm bắt đầu bằng click trên bản đồ ---- */
 function enableSelectStartOnMap() {
   selectingStartOnMap = true;
   map.getContainer().classList.add('selecting-start');
@@ -465,285 +600,304 @@ function disableSelectStartOnMap() {
   selectingStartOnMap = false;
   map.getContainer().classList.remove('selecting-start');
 }
-
 function selectStartFromMap(latlng) {
-  const lat = latlng.lat, lng = latlng.lng;
+  const { lat, lng } = latlng;
   disableSelectStartOnMap();
-
-  const fallbackLabel = lat.toFixed(5) + ', ' + lng.toFixed(5);
-  setStartLocation(lat, lng, fallbackLabel, 'map');
-
-  // Cố gắng reverse geocode để hiển thị tên địa điểm dễ đọc hơn toạ độ
+  const fallback = lat.toFixed(5) + ', ' + lng.toFixed(5);
+  setStartLocation(lat, lng, fallback, 'map');
   reverseGeocodeStartLabel(lat, lng);
 }
-
 function reverseGeocodeStartLabel(lat, lng) {
   fetch('https://nominatim.openstreetmap.org/reverse?' + new URLSearchParams({
     format: 'json', lat: String(lat), lon: String(lng), zoom: '18', addressdetails: '1'
   }), { headers: { 'Accept-Language': 'vi' } })
-    .then(res => (res.ok ? res.json() : Promise.reject(new Error('reverse geocode failed'))))
-    .then(data => {
-      // Nếu người dùng đã chọn điểm khác trong lúc chờ phản hồi thì bỏ qua
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
       if (!startLocation || startLocation.lat !== lat || startLocation.lng !== lng) return;
-      if (data && data.display_name) {
-        const label = shortenDisplayName(data.display_name);
-        startLocation.label = label;
-        document.getElementById('start-input').value = label;
+      if (d?.display_name) {
+        const lbl = shortenDisplayName(d.display_name);
+        startLocation.label = lbl;
+        document.getElementById('start-input').value = lbl;
       }
-    })
-    .catch(() => { /* Reverse geocode lỗi -> giữ nguyên toạ độ đã hiển thị, không crash */ });
+    }).catch(() => {});
 }
 
-/* ---- 3) Nhập địa điểm + gợi ý từ Nominatim (debounce 400ms) ---- */
 function initStartLocationControls() {
   const input = document.getElementById('start-input');
-  const gpsBtn = document.getElementById('gps-btn');
-
-  gpsBtn.addEventListener('click', handleGpsClick);
-
-  input.addEventListener('focus', function () {
-    if (input.value.trim().length < 2) showStartQuickOptions();
-  });
-
-  input.addEventListener('input', function () {
-    startLocation = null; // toạ độ cũ không còn hợp lệ khi người dùng gõ lại
-    const query = input.value.trim();
+  document.getElementById('gps-btn').addEventListener('click', handleGpsClick);
+  input.addEventListener('focus', () => { if (input.value.trim().length < 2) showStartQuickOptions(); });
+  input.addEventListener('input', () => {
+    startLocation = null;
     clearTimeout(startSearchTimer);
-    if (query.length < 2) {
-      showStartQuickOptions();
-      return;
-    }
-    startSearchTimer = setTimeout(() => searchStartLocation(query), 400);
+    const q = input.value.trim();
+    if (q.length < 2) { showStartQuickOptions(); return; }
+    startSearchTimer = setTimeout(() => searchStartLocation(q), 400);
   });
-
-  // Đóng dropdown khi click ra ngoài ô điểm bắt đầu
-  document.addEventListener('click', function (e) {
+  document.addEventListener('click', e => {
     if (!e.target.closest('#start-field')) hideStartSuggestions();
+    if (!e.target.closest('#end-field')) hideEndSuggestions();
   });
 }
 
-// Gợi ý nhanh khi ô còn trống/ngắn: cho phép chọn trên bản đồ
 function showStartQuickOptions() {
-  const suggestBox = document.getElementById('start-suggestions');
-  suggestBox.innerHTML = `
-    <li class="suggestion-item pick-map-option" role="option">
-      <i class="fa-solid fa-map-location-dot"></i>
-      <div><div class="s-main">Chọn trên bản đồ</div></div>
-    </li>`;
-  suggestBox.classList.remove('hidden');
+  const box = document.getElementById('start-suggestions');
+  box.innerHTML = `<li class="suggestion-item pick-map-option" role="option">
+    <i class="fa-solid fa-map-location-dot"></i>
+    <div><div class="s-main">Chọn trên bản đồ</div></div></li>`;
+  box.classList.remove('hidden');
   document.getElementById('start-input').setAttribute('aria-expanded', 'true');
-
-  suggestBox.querySelector('.pick-map-option').addEventListener('click', function () {
-    hideStartSuggestions();
-    enableSelectStartOnMap();
+  box.querySelector('.pick-map-option').addEventListener('click', () => {
+    hideStartSuggestions(); enableSelectStartOnMap();
   });
 }
-
 function hideStartSuggestions() {
-  const suggestBox = document.getElementById('start-suggestions');
-  suggestBox.classList.add('hidden');
-  suggestBox.innerHTML = '';
+  const box = document.getElementById('start-suggestions');
+  box.classList.add('hidden'); box.innerHTML = '';
   document.getElementById('start-input').setAttribute('aria-expanded', 'false');
 }
 
 async function searchStartLocation(query) {
-  const token = ++startSearchToken; // dùng để bỏ kết quả cũ nếu có query mới hơn
+  const token = ++startSearchToken;
   try {
     const res = await fetch('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({
       format: 'json', q: query, limit: '5', countrycodes: 'vn', addressdetails: '1'
     }), { headers: { 'Accept-Language': 'vi' } });
-
     if (token !== startSearchToken) return;
-    if (!res.ok) throw new Error('Nominatim error');
+    if (!res.ok) throw new Error();
     const results = await res.json();
     if (token !== startSearchToken) return;
     renderStartSuggestions(results);
-  } catch (err) {
-    if (token !== startSearchToken) return;
-    showToast('Không thể tìm địa điểm. Vui lòng thử lại.');
-  }
+  } catch { if (token !== startSearchToken) return; showToast('Không thể tìm địa điểm.'); }
 }
 
 function renderStartSuggestions(results) {
-  const suggestBox = document.getElementById('start-suggestions');
-
-  if (!results || results.length === 0) {
-    suggestBox.innerHTML = '<li class="suggestion-empty">Không tìm thấy địa điểm phù hợp.</li>';
-    suggestBox.classList.remove('hidden');
-    return;
+  const box = document.getElementById('start-suggestions');
+  if (!results?.length) {
+    box.innerHTML = '<li class="suggestion-empty">Không tìm thấy địa điểm phù hợp.</li>';
+    box.classList.remove('hidden'); return;
   }
-
-  suggestBox.innerHTML = results.map((r, i) => {
-    const shortName = shortenDisplayName(r.display_name);
-    const mainPart = shortName.split(',')[0];
-    const subPart = shortName.split(',').slice(1).join(',').trim();
-    return `
-      <li class="suggestion-item" role="option" data-index="${i}">
-        <i class="fa-solid fa-location-dot"></i>
-        <div>
-          <div class="s-main">${escapeHtml(mainPart)}</div>
-          ${subPart ? `<div class="s-sub">${escapeHtml(subPart)}</div>` : ''}
-        </div>
-      </li>`;
+  box.innerHTML = results.map((r, i) => {
+    const s = shortenDisplayName(r.display_name);
+    const m = s.split(',')[0], sub = s.split(',').slice(1).join(',').trim();
+    return `<li class="suggestion-item" role="option" data-index="${i}">
+      <i class="fa-solid fa-location-dot"></i>
+      <div><div class="s-main">${escapeHtml(m)}</div>${sub ? `<div class="s-sub">${escapeHtml(sub)}</div>` : ''}</div>
+    </li>`;
   }).join('');
-
-  suggestBox.classList.remove('hidden');
+  box.classList.remove('hidden');
   document.getElementById('start-input').setAttribute('aria-expanded', 'true');
-
-  suggestBox.querySelectorAll('.suggestion-item[data-index]').forEach(item => {
-    item.addEventListener('click', function () {
-      const idx = Number(item.dataset.index);
-      const r = results[idx];
-      const label = shortenDisplayName(r.display_name);
-      const lat = Number(r.lat), lng = Number(r.lon);
-
-      setStartLocation(lat, lng, label, 'search');
-      map.setView([lat, lng], 16);
-      hideStartSuggestions();
+  box.querySelectorAll('.suggestion-item[data-index]').forEach(item => {
+    item.addEventListener('click', () => {
+      const r = results[+item.dataset.index];
+      setStartLocation(+r.lat, +r.lon, shortenDisplayName(r.display_name), 'search');
+      map.setView([+r.lat, +r.lon], 16); hideStartSuggestions();
       showToast('Đã chọn điểm bắt đầu.');
     });
   });
 }
 
 /* ---------------------------------------------------------------
-   6c. GEOCODE ĐIỂM ĐẾN (Nominatim) + KIỂM TRA TOẠ ĐỘ HỢP LỆ
+   11. AUTOCOMPLETE ĐIỂM ĐẾN
 --------------------------------------------------------------- */
-
-// Kiểm tra một cặp toạ độ có nằm trong phạm vi hợp lệ hay không
-function isValidCoordinate(lat, lng) {
-  return Number.isFinite(Number(lat))
-    && Number.isFinite(Number(lng))
-    && Number(lat) >= -90
-    && Number(lat) <= 90
-    && Number(lng) >= -180
-    && Number(lng) <= 180;
-}
-
-// Xoá endLocation mỗi khi người dùng gõ lại ô "Điểm đến" — tránh dùng nhầm
-// toạ độ đã geocode của lần nhập trước đó
 function initEndLocationControls() {
-  document.getElementById('end-input').addEventListener('input', function () {
+  const input = document.getElementById('end-input');
+  input.addEventListener('input', () => {
     endLocation = null;
+    clearTimeout(endSearchTimer);
+    const q = input.value.trim();
+    if (q.length < 2) { hideEndSuggestions(); return; }
+    endSearchTimer = setTimeout(() => searchEndLocation(q), 400);
   });
 }
 
-// Chuyển text điểm đến thành toạ độ qua Nominatim. Trả về:
-//   { lat, lng, label, source: 'end-search' }  khi thành công
-//   null  khi không tìm thấy địa điểm
-// Ném lỗi (throw) khi bản thân request thất bại, để onFindRouteClick() bắt
-// và hiển thị toast phù hợp thay vì làm crash ứng dụng.
-async function geocodeEndLocation(query) {
-  const token = ++endSearchToken; // nếu có lần gọi mới hơn thì bỏ kết quả cũ
+function hideEndSuggestions() {
+  const box = document.getElementById('end-suggestions');
+  box.classList.add('hidden'); box.innerHTML = '';
+  document.getElementById('end-input').setAttribute('aria-expanded', 'false');
+}
 
-  const res = await fetch('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({
-    format: 'json', q: query, limit: '1', countrycodes: 'vn', addressdetails: '1'
-  }), { headers: { 'Accept-Language': 'vi' } });
+async function searchEndLocation(query) {
+  const token = ++endSearchToken;
+  try {
+    const res = await fetch('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({
+      format: 'json', q: query, limit: '5', countrycodes: 'vn', addressdetails: '1'
+    }), { headers: { 'Accept-Language': 'vi' } });
+    if (token !== endSearchToken) return;
+    if (!res.ok) throw new Error();
+    const results = await res.json();
+    if (token !== endSearchToken) return;
+    renderEndSuggestions(results);
+  } catch { if (token !== endSearchToken) return; showToast('Không thể tìm địa điểm.'); }
+}
 
-  if (!res.ok) throw new Error('Nominatim error');
-  const results = await res.json();
-
-  if (token !== endSearchToken) return null; // đã có query mới hơn xen vào
-
-  if (!results || results.length === 0) return null;
-
-  const r = results[0];
-  const lat = Number(r.lat), lng = Number(r.lon);
-  if (!isValidCoordinate(lat, lng)) return null;
-
-  return { lat, lng, label: r.display_name, source: 'end-search' };
+function renderEndSuggestions(results) {
+  const box = document.getElementById('end-suggestions');
+  if (!results?.length) {
+    box.innerHTML = '<li class="suggestion-empty">Không tìm thấy địa điểm phù hợp.</li>';
+    box.classList.remove('hidden'); return;
+  }
+  box.innerHTML = results.map((r, i) => {
+    const s = shortenDisplayName(r.display_name);
+    const m = s.split(',')[0], sub = s.split(',').slice(1).join(',').trim();
+    return `<li class="suggestion-item" role="option" data-index="${i}">
+      <i class="fa-solid fa-flag-checkered"></i>
+      <div><div class="s-main">${escapeHtml(m)}</div>${sub ? `<div class="s-sub">${escapeHtml(sub)}</div>` : ''}</div>
+    </li>`;
+  }).join('');
+  box.classList.remove('hidden');
+  document.getElementById('end-input').setAttribute('aria-expanded', 'true');
+  box.querySelectorAll('.suggestion-item[data-index]').forEach(item => {
+    item.addEventListener('click', () => {
+      const r = results[+item.dataset.index];
+      const label = shortenDisplayName(r.display_name);
+      endLocation = { lat: +r.lat, lng: +r.lon, label, source: 'search' };
+      document.getElementById('end-input').value = label;
+      document.getElementById('end-input').setAttribute('aria-expanded', 'false');
+      hideEndSuggestions();
+      updateEndMarker(+r.lat, +r.lon, label);
+      map.setView([+r.lat, +r.lon], 16);
+      showToast('Đã chọn điểm đến.');
+    });
+  });
 }
 
 /* ---------------------------------------------------------------
-   7. HÀM TÌM ĐƯỜNG AN TOÀN (mô phỏng Dijkstra/A*)
-   alpha (mức ưu tiên an toàn) được quyết định bởi mode đã chọn:
-      fastest  -> alpha = 0
-      balanced -> alpha = 1
-      safest   -> alpha = 3
-   weight = distance * (1 + alpha * riskScoreNormalized)
+   12. ROUTING THẬT — OSRM API
+   lng,lat (OSRM) → lat,lng (Leaflet)
 --------------------------------------------------------------- */
+async function findSafeRoutes(start, end) {
+  const url = `https://router.project-osrm.org/route/v1/driving/` +
+    `${start.lng},${start.lat};${end.lng},${end.lat}` +
+    `?overview=full&geometries=geojson&steps=true&alternatives=true`;
 
-// Sinh toạ độ minh hoạ cho MỘT tuyến, luôn bắt đầu đúng tại start và kết
-// thúc đúng tại end — đây chỉ là đường MINH HOẠ (nội suy tuyến tính + lệch
-// nhẹ để 3 tuyến không trùng nhau), KHÔNG PHẢI đường giao thông thực tế.
-// Muốn có tuyến đường thật, cần thay hàm này bằng lời gọi tới một routing
-// engine thật như OSRM, GraphHopper, Valhalla... (nhận start/end rồi trả
-// về geometry đường đi thực tế trên lưới đường bộ).
-function createDemoRouteCoords(start, end, routeIndex) {
-  const points = [];
-  const numberOfPoints = 7;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Routing API error');
+  const data = await res.json();
+  if (data.code !== 'Ok' || !data.routes?.length) throw new Error('Không tìm thấy tuyến đường');
 
-  for (let i = 0; i < numberOfPoints; i++) {
-    const t = i / (numberOfPoints - 1);
-
-    const lat = start.lat + (end.lat - start.lat) * t;
-    const lng = start.lng + (end.lng - start.lng) * t;
-
-    let offsetLat = 0;
-    let offsetLng = 0;
-
-    if (routeIndex === 1) offsetLat = Math.sin(t * Math.PI) * 0.003;
-    if (routeIndex === 2) offsetLng = Math.sin(t * Math.PI) * 0.003;
-
-    points.push([lat + offsetLat, lng + offsetLng]);
-  }
-
-  // Đảm bảo điểm đầu/cuối khớp CHÍNH XÁC với start/end, không lệch do offset
-  points[0] = [start.lat, start.lng];
-  points[points.length - 1] = [end.lat, end.lng];
-
-  return points;
-}
-
-function findSafeRoute(start, end, mode) {
-  // ---- DEMO: 3 tuyến minh hoạ được sinh từ toạ độ start/end thật ----
-  // start/end đều là object { lat, lng, label, source }. Khoảng cách,
-  // thời gian, riskScore vẫn là số minh hoạ (ROUTE_MODE_CONFIGS) — muốn
-  // tính đúng cần gọi routing engine thật (OSRM/GraphHopper) + calculateRiskScore().
-  console.log('findSafeRoute(demo): start =', start, '-> end =', end, '| mode =', mode);
-
-  return ROUTE_MODE_CONFIGS.map(config => ({
-    ...config,
-    coords: createDemoRouteCoords(start, end, config.routeIndex),
-    highlights: [
-      `Điểm bắt đầu: ${start.label}`,
-      `Điểm đến: ${end.label}`,
-      'Tuyến đường minh hoạ trong bản demo'
-    ]
+  return data.routes.map((route, index) => ({
+    id: String.fromCharCode(65 + index),
+    coords: route.geometry.coordinates.map(([lng, lat]) => [lat, lng]),
+    distance: route.distance / 1000,
+    duration: route.duration / 60,
+    legs: route.legs,
+    routeIndex: index,
+    riskScore: 0,
   }));
 }
 
 /* ---------------------------------------------------------------
-   8. RENDER SỰ CỐ TRÊN BẢN ĐỒ
+   13. RISK SCORE từ incident thật gần route
 --------------------------------------------------------------- */
-function renderIncidents() {
-  incidentLayerGroup.clearLayers();
+function calculateRouteRisk(route) {
+  let raw = 0;
+  for (const inc of incidents) {
+    const c = calculateCurrentConfidence(inc);
+    if (c <= 0) continue;
+    const distM = minDistanceToPolyline(inc.lat, inc.lng, route.coords);
+    let distW = 0;
+    if (distM < RISK_IMPACT.STRONG_THRESHOLD_M) distW = RISK_IMPACT.STRONG_WEIGHT;
+    else if (distM < RISK_IMPACT.MEDIUM_THRESHOLD_M) distW = RISK_IMPACT.MEDIUM_WEIGHT;
+    if (distW === 0) continue;
+    raw += distW * (INCIDENT_TYPE_WEIGHT[inc.type] ?? 0.1) * (INCIDENT_LEVEL_WEIGHT[inc.level] ?? 0.2) * (c / 100);
+  }
+  return Math.min(100, Math.round((raw / 3.0) * 100));
+}
 
-  incidents.forEach(inc => {
-    const meta = INCIDENT_TYPES[inc.type];
-    const icon = L.divIcon({
-      className: '',
-      html: `<div class="incident-marker" style="border-color:${meta.color}"><span>${meta.emoji}</span></div>`,
-      iconSize: [30, 30],
-      iconAnchor: [15, 28]
-    });
-
-    const marker = L.marker([inc.lat, inc.lng], { icon }).addTo(incidentLayerGroup);
-
-    const levelColor = inc.level === 'cao' ? 'var(--risk-high)' : inc.level === 'trungbinh' ? 'var(--risk-mid)' : 'var(--risk-low)';
-    marker.bindPopup(`
-      <div class="popup-box">
-        <div class="p-head">${meta.emoji} ${meta.label}</div>
-        <div class="p-row"><span>Mô tả</span><b>${inc.desc}</b></div>
-        <div class="p-row"><span>Thời gian</span><b>${inc.time}</b></div>
-        <div class="p-row"><span>Xác nhận</span><b>${inc.confirms} người</b></div>
-        <span class="p-level" style="background:${levelColor}22;color:${levelColor}">Mức độ: ${LEVEL_LABEL[inc.level]}</span>
-      </div>
-    `);
+/* ---------------------------------------------------------------
+   14. SẮP XẾP ROUTE THEO CHẾ ĐỘ
+--------------------------------------------------------------- */
+const MODE_ALPHA = { fastest: 0, balanced: 1, safest: 3 };
+function sortRoutesByMode(routes, mode) {
+  const alpha = MODE_ALPHA[mode] ?? 1;
+  return [...routes].sort((a, b) => {
+    const wA = a.duration * (1 + alpha * a.riskScore / 100);
+    const wB = b.duration * (1 + alpha * b.riskScore / 100);
+    return wA - wB;
   });
 }
 
 /* ---------------------------------------------------------------
-   9. RENDER PANEL "CẢNH BÁO GẦN BẠN" (demo tĩnh)
+   15. HƯỚNG DẪN TỪNG BƯỚC (OSRM steps)
+--------------------------------------------------------------- */
+function buildStepInstruction(step) {
+  const type = step.maneuver?.type ?? '';
+  const mod = step.maneuver?.modifier ?? '';
+  const name = step.name ? `đường ${step.name}` : 'tiếp tục';
+  const map2 = {
+    depart: '🚦 Xuất phát', arrive: '🏁 Đến điểm đích',
+    turn: mod.includes('left') ? '↰ Rẽ trái vào' : '↱ Rẽ phải vào',
+    'new name': '➡️ Đổi sang', merge: '↗️ Nhập vào',
+    fork: mod.includes('left') ? '↰ Rẽ trái tại ngã ba' : '↱ Rẽ phải tại ngã ba',
+    'end of road': mod.includes('left') ? '↰ Rẽ trái' : '↱ Rẽ phải',
+    continue: '⬆️ Đi thẳng', roundabout: '🔄 Vào vòng xuyến',
+    rotary: '🔄 Vào vòng xuyến',
+  };
+  const prefix = map2[type] ?? '➡️ Đi';
+  return type === 'arrive' ? prefix : `${prefix} ${name}`;
+}
+
+function buildStepsHtml(legs) {
+  if (!legs?.length) return '';
+  const steps = legs.flatMap(leg => leg.steps ?? []);
+  if (!steps.length) return '';
+  return `<details class="route-steps-details">
+    <summary><i class="fa-solid fa-list-ul"></i> Xem hướng dẫn chi tiết</summary>
+    <ul class="route-steps">
+      ${steps.map(s => {
+        const dist = s.distance >= 1000
+          ? (s.distance/1000).toFixed(1)+' km'
+          : Math.round(s.distance)+' m';
+        return `<li class="route-step">
+          <span class="step-instr">${escapeHtml(buildStepInstruction(s))}</span>
+          <span class="step-dist">${dist}</span>
+        </li>`;
+      }).join('')}
+    </ul>
+  </details>`;
+}
+
+/* ---------------------------------------------------------------
+   16. RENDER SỰ CỐ TRÊN BẢN ĐỒ CHÍNH
+--------------------------------------------------------------- */
+function renderIncidents() {
+  incidentLayerGroup.clearLayers();
+  const now = Date.now();
+
+  for (const inc of incidents) {
+    const currentC = calculateCurrentConfidence(inc, now);
+    if (currentC <= 0.1) continue;
+
+    const meta = INCIDENT_TYPES[inc.type];
+    const opacity = Math.max(0.25, currentC / 100);
+    const confColor = getConfidenceColor(currentC);
+    const levelColor = inc.level === 'cao' ? 'var(--risk-high)' : inc.level === 'trungbinh' ? 'var(--risk-mid)' : 'var(--risk-low)';
+
+    const icon = L.divIcon({
+      className: '',
+      html: `<div class="incident-marker" style="border-color:${meta.color};opacity:${opacity}"><span>${meta.emoji}</span></div>`,
+      iconSize: [30, 30], iconAnchor: [15, 28]
+    });
+
+    const marker = L.marker([inc.lat, inc.lng], { icon, opacity }).addTo(incidentLayerGroup);
+
+    marker.bindPopup(`
+      <div class="popup-box">
+        <div class="p-head">${meta.emoji} ${meta.label}</div>
+        <div class="confidence-bar"><div class="confidence-fill" style="width:${Math.round(currentC)}%;background:${confColor}"></div></div>
+        <div class="p-row"><span>Độ tin cậy</span><b style="color:${confColor}">${Math.round(currentC)}%</b></div>
+        <div class="p-row"><span>Báo cáo</span><b>${inc.reporterCount ?? 1} người</b></div>
+        <div class="p-row"><span>Mô tả</span><b>${escapeHtml(inc.desc)}</b></div>
+        <div class="p-row"><span>Cập nhật</span><b>${formatRelativeTime(inc.lastConfirmedAt ?? inc.createdAt)}</b></div>
+        <span class="p-level" style="background:${levelColor}22;color:${levelColor}">
+          Mức độ: ${LEVEL_LABEL[inc.level]}
+        </span>
+      </div>`);
+  }
+}
+
+/* ---------------------------------------------------------------
+   17. RENDER PANEL "CẢNH BÁO GẦN BẠN"
 --------------------------------------------------------------- */
 function renderNearbyPanel() {
   const nearby = [
@@ -751,221 +905,307 @@ function renderNearbyPanel() {
     { type: 'accident', label: 'Tai nạn', dist: '1.2km' },
     { type: 'construction', label: 'Công trình', dist: '2.1km' }
   ];
-  const list = document.getElementById('nearby-list');
-  list.innerHTML = nearby.map(n => {
+  document.getElementById('nearby-list').innerHTML = nearby.map(n => {
     const meta = INCIDENT_TYPES[n.type];
     return `<div class="np-item">
-              <span class="np-label">${meta.emoji} ${n.label}</span>
-              <span class="np-dist">${n.dist}</span>
-            </div>`;
+      <span class="np-label">${meta.emoji} ${n.label}</span>
+      <span class="np-dist">${n.dist}</span>
+    </div>`;
   }).join('');
 }
 
 /* ---------------------------------------------------------------
-   10. RENDER 3 TUYẾN ĐƯỜNG + THẺ KẾT QUẢ Ở SIDEBAR
+   18. RENDER ROUTES
 --------------------------------------------------------------- */
 function renderRoutes(routes, mode) {
   routeLayerGroup.clearLayers();
-
+  const sorted = sortRoutesByMode(routes, mode);
   const bounds = [];
-  routes.forEach(route => {
-    const isBest = route.mode === mode;
+
+  sorted.forEach((route, idx) => {
+    const isBest = idx === 0;
+    const color = ROUTE_COLORS[route.routeIndex] ?? ROUTE_COLORS[0];
     const line = L.polyline(route.coords, {
-      color: route.color,
-      weight: isBest ? 6 : 4,
-      opacity: isBest ? 0.95 : 0.55,
+      color, weight: isBest ? 6 : 4, opacity: isBest ? 0.95 : 0.55,
       dashArray: isBest ? null : '2 8'
     }).addTo(routeLayerGroup);
-
-    line.bindTooltip(`Tuyến ${route.id} · ${route.name} · ${route.distance}km`, { sticky: true });
+    line.bindTooltip(
+      `Tuyến ${route.id} · ${route.distance.toFixed(1)} km · ${Math.round(route.duration)} phút`,
+      { sticky: true }
+    );
     route.coords.forEach(c => bounds.push(c));
   });
 
   if (bounds.length) map.fitBounds(bounds, { padding: [60, 60] });
 
-  // ---- Render card kết quả ở sidebar ----
   const resultsEl = document.getElementById('route-results');
   resultsEl.classList.add('show');
-  resultsEl.innerHTML = '<p class="panel-title" style="margin-top:4px;">KẾT QUẢ TUYẾN ĐƯỜNG</p>' +
-    routes.map(route => {
-      const riskColor = route.riskScore >= 66 ? 'var(--risk-high)' : route.riskScore >= 34 ? 'var(--risk-mid)' : 'var(--risk-low)';
-      const isBest = route.mode === mode;
-      return `
-        <div class="route-card ${isBest ? 'best' : ''}">
-          <div class="route-card-head">
-            <span class="title">${route.name}</span>
-            ${isBest ? '<span class="badge">Đề xuất</span>' : ''}
-          </div>
-          <div class="route-stats">
-            <div class="stat"><b>${route.distance} km</b><span>Quãng đường</span></div>
-            <div class="stat"><b>${route.duration} phút</b><span>Thời gian</span></div>
-          </div>
-          <div class="risk-row">
-            <div class="risk-bar-track"><div class="risk-bar-fill" style="width:${route.riskScore}%;background:${riskColor}"></div></div>
-            <span class="risk-value" style="color:${riskColor}">${route.riskScore}/100</span>
-          </div>
-          <ul class="route-points">
-            ${route.highlights.map(h => `<li><i class="fa-solid fa-circle-check"></i>${h}</li>`).join('')}
-          </ul>
-          <button class="choose-btn" onclick="chooseRoute('${route.id}')">Chọn tuyến này</button>
-        </div>`;
+  const modeName = mode === 'fastest' ? 'NHANH NHẤT' : mode === 'balanced' ? 'CÂN BẰNG' : 'AN TOÀN NHẤT';
+  resultsEl.innerHTML = `<p class="panel-title" style="margin-top:4px;">KẾT QUẢ TUYẾN ĐƯỜNG</p>
+    <p class="routes-summary">Tìm thấy ${sorted.length} tuyến đường</p>` +
+    sorted.map((route, idx) => {
+      const isBest = idx === 0;
+      const rc = route.riskScore >= 66 ? 'var(--risk-high)' : route.riskScore >= 34 ? 'var(--risk-mid)' : 'var(--risk-low)';
+      const color = ROUTE_COLORS[route.routeIndex] ?? ROUTE_COLORS[0];
+      return `<div class="route-card ${isBest ? 'best' : ''}">
+        <div class="route-card-head">
+          <span class="title" style="color:${color}">● Tuyến ${route.id}</span>
+          ${isBest ? `<span class="badge">Đề xuất (${modeName})</span>` : ''}
+        </div>
+        <div class="route-stats">
+          <div class="stat"><b>${route.distance.toFixed(1)} km</b><span>Quãng đường</span></div>
+          <div class="stat"><b>${Math.round(route.duration)} phút</b><span>Thời gian</span></div>
+        </div>
+        <div class="risk-row">
+          <div class="risk-bar-track"><div class="risk-bar-fill" style="width:${route.riskScore}%;background:${rc}"></div></div>
+          <span class="risk-value" style="color:${rc}">${route.riskScore}/100</span>
+        </div>
+        ${buildStepsHtml(route.legs)}
+        <button class="choose-btn" onclick="chooseRoute('${route.id}')">Chọn tuyến này</button>
+      </div>`;
     }).join('');
 }
 
-function chooseRoute(routeId) {
-  showToast(`Đã chọn Tuyến ${routeId}. Bắt đầu chỉ đường...`);
-}
+function chooseRoute(id) { showToast(`Đã chọn Tuyến ${id}. Bắt đầu chỉ đường...`); }
 
 /* ---------------------------------------------------------------
-   11. XỬ LÝ NÚT "TÌM ĐƯỜNG AN TOÀN"
+   19. NÚT "TÌM ĐƯỜNG AN TOÀN"
 --------------------------------------------------------------- */
 async function onFindRouteClick() {
-  if (isFindingRoute) return; // đang xử lý -> bỏ qua các lần bấm thêm
+  if (isFindingRoute) return;
 
   const endText = document.getElementById('end-input').value.trim();
-
-  // 1-2) Kiểm tra điểm bắt đầu đã có toạ độ hợp lệ chưa
   if (!startLocation || !isValidCoordinate(startLocation.lat, startLocation.lng)) {
-    showToast('Vui lòng chọn điểm bắt đầu hợp lệ.');
-    return;
+    showToast('Vui lòng chọn điểm bắt đầu hợp lệ.'); return;
   }
-  // 3) Điểm đến: bắt buộc phải có text
-  if (!endText) {
-    showToast('Vui lòng nhập điểm đến.');
-    return;
-  }
+  if (!endText) { showToast('Vui lòng nhập điểm đến.'); return; }
 
   isFindingRoute = true;
-  setFindButtonLoading(true);
+  setFindButtonLoading(true, 'Đang tìm tuyến đường...');
 
   try {
-    // 4-5) Chỉ geocode lại nếu chưa có toạ độ điểm đến (endLocation bị xoá
-    // mỗi khi người dùng gõ lại ô "Điểm đến" — xem initEndLocationControls())
+    // Geocode fallback nếu chưa chọn gợi ý
     if (!endLocation) {
-      endLocation = await geocodeEndLocation(endText);
+      setFindButtonLoading(true, 'Đang xác định địa điểm...');
+      const res = await fetch('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({
+        format: 'json', q: endText, limit: '1', countrycodes: 'vn', addressdetails: '1'
+      }), { headers: { 'Accept-Language': 'vi' } });
+      if (!res.ok) throw new Error('Nominatim error');
+      const results = await res.json();
+      if (!results?.length) { showToast('Không tìm thấy địa điểm. Vui lòng chọn từ danh sách gợi ý.'); return; }
+      const r = results[0];
+      if (!isValidCoordinate(+r.lat, +r.lon)) { showToast('Không tìm thấy điểm đến hợp lệ.'); return; }
+      endLocation = { lat: +r.lat, lng: +r.lon, label: shortenDisplayName(r.display_name), source: 'fallback' };
+      document.getElementById('end-input').value = endLocation.label;
+      updateEndMarker(endLocation.lat, endLocation.lng, endLocation.label);
+      setFindButtonLoading(true, 'Đang tìm tuyến đường...');
     }
 
-    if (!endLocation || !isValidCoordinate(endLocation.lat, endLocation.lng)) {
-      showToast('Không tìm thấy điểm đến.');
-      endLocation = null;
-      return;
-    }
+    const dist = haversineMeters(startLocation.lat, startLocation.lng, endLocation.lat, endLocation.lng);
+    if (dist < 50) { showToast('Điểm bắt đầu và điểm đến không được giống nhau.'); return; }
 
-    // 6-7) Tìm đường bằng TOẠ ĐỘ (không còn dùng text điểm đến nữa)
-    const routes = findSafeRoute(startLocation, endLocation, selectedMode);
+    cleanupExpiredIncidents();
+    const routes = await findSafeRoutes(startLocation, endLocation);
+    routes.forEach(r => { r.riskScore = calculateRouteRisk(r); });
+    currentRoutes = routes;
     renderRoutes(routes, selectedMode);
 
-    console.log('Route start:', routes[0].coords[0]);
-    console.log('Expected start:', [startLocation.lat, startLocation.lng]);
+    if (window.innerWidth <= 820) document.getElementById('sidebar').classList.add('expanded');
 
-    // Trên mobile, tự mở rộng bottom sheet để thấy kết quả
-    if (window.innerWidth <= 820) {
-      document.getElementById('sidebar').classList.add('expanded');
-    }
-  } catch (error) {
-    console.error(error);
-    showToast('Không thể xác định điểm đến.');
+  } catch (err) {
+    console.error('SafeRoute error:', err);
+    if (err.message === 'Không tìm thấy tuyến đường') showToast('Không tìm thấy tuyến đường giữa hai địa điểm.');
+    else showToast('Không thể tìm tuyến đường. Vui lòng thử lại.');
   } finally {
     isFindingRoute = false;
-    setFindButtonLoading(false);
+    setFindButtonLoading(false, 'Tìm đường an toàn');
   }
 }
 
-// Bật/tắt trạng thái "Đang tìm..." trên nút Tìm đường, đồng thời disable
-// nút để tránh người dùng gửi nhiều request geocode cùng lúc.
-function setFindButtonLoading(isLoading) {
+function setFindButtonLoading(isLoading, label) {
   const btn = document.getElementById('find-btn');
-  const label = document.getElementById('find-btn-label');
   btn.disabled = isLoading;
-  label.textContent = isLoading ? 'Đang tìm...' : 'Tìm đường an toàn';
-}
-
-function swapLocations() {
-  const startInput = document.getElementById('start-input');
-  const endInput = document.getElementById('end-input');
-
-  // Đổi chỗ text hiển thị
-  const tmpText = startInput.value;
-  startInput.value = endInput.value;
-  endInput.value = tmpText;
-
-  // Đổi chỗ toạ độ tương ứng. Nếu một bên chưa có toạ độ (null), sau khi
-  // swap bên kia cũng sẽ thành null — đúng nguyên tắc "không giữ nhầm toạ độ
-  // cũ (vd. Chợ Bến Thành)" khi điểm còn lại chưa từng được geocode.
-  const temp = startLocation;
-  startLocation = endLocation;
-  endLocation = temp;
-
-  if (startLocation) {
-    updateStartMarker(startLocation.lat, startLocation.lng, startLocation.label);
-  } else {
-    if (startMarker) {
-      map.removeLayer(startMarker);
-      startMarker = null;
-    }
-    showToast('Vui lòng chọn lại điểm bắt đầu.');
-  }
+  document.getElementById('find-btn-label').textContent = label ?? (isLoading ? 'Đang tìm...' : 'Tìm đường an toàn');
 }
 
 /* ---------------------------------------------------------------
-   12. CHỌN CHẾ ĐỘ (fastest / balanced / safest)
+   20. SWAP START / END
 --------------------------------------------------------------- */
-document.getElementById('mode-group').addEventListener('change', function (e) {
+function swapLocations() {
+  const si = document.getElementById('start-input');
+  const ei = document.getElementById('end-input');
+  const tmpText = si.value; si.value = ei.value; ei.value = tmpText;
+  const tmpLoc = startLocation; startLocation = endLocation; endLocation = tmpLoc;
+
+  if (startLocation && isValidCoordinate(startLocation.lat, startLocation.lng))
+    updateStartMarker(startLocation.lat, startLocation.lng, startLocation.label);
+  else { if (startMarker) { map.removeLayer(startMarker); startMarker = null; } showToast('Vui lòng chọn lại điểm bắt đầu.'); }
+
+  if (endLocation && isValidCoordinate(endLocation.lat, endLocation.lng))
+    updateEndMarker(endLocation.lat, endLocation.lng, endLocation.label);
+  else { if (endMarker) { map.removeLayer(endMarker); endMarker = null; } }
+}
+
+/* ---------------------------------------------------------------
+   21. CHẾ ĐỘ
+--------------------------------------------------------------- */
+document.getElementById('mode-group').addEventListener('change', e => {
   selectedMode = e.target.value;
   document.querySelectorAll('.mode-option').forEach(opt => {
     opt.classList.toggle('checked', opt.dataset.mode === selectedMode);
   });
+  if (currentRoutes.length > 0) renderRoutes(currentRoutes, selectedMode);
 });
 
 /* ---------------------------------------------------------------
-   13. MODAL BÁO CÁO SỰ CỐ
+   22. MINI MAP BÁO CÁO SỰ CỐ — độc lập với bản đồ chính
+--------------------------------------------------------------- */
+function initReportMap() {
+  if (reportMapInitialized) {
+    setTimeout(() => reportMap?.invalidateSize(), 100);
+    return;
+  }
+
+  reportMap = L.map('report-mini-map', {
+    zoomControl: true,
+    attributionControl: true
+  }).setView([10.7769, 106.7009], 14);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(reportMap);
+
+  // Click mini map → chọn vị trí
+  reportMap.on('click', e => selectReportLocation(e.latlng));
+
+  reportMapInitialized = true;
+  setTimeout(() => reportMap?.invalidateSize(), 100);
+}
+
+function selectReportLocation(latlng) {
+  reportSelectedLatLng = { lat: latlng.lat, lng: latlng.lng };
+
+  if (reportMarker) { reportMap.removeLayer(reportMarker); reportMarker = null; }
+
+  const icon = L.divIcon({
+    className: '',
+    html: '<div class="report-location-marker"><i class="fa-solid fa-location-dot"></i></div>',
+    iconSize: [36, 36], iconAnchor: [18, 34]
+  });
+
+  reportMarker = L.marker([latlng.lat, latlng.lng], { icon, draggable: true }).addTo(reportMap);
+
+  // Kéo marker để tinh chỉnh vị trí
+  reportMarker.on('dragend', e => {
+    const pos = e.target.getLatLng();
+    reportSelectedLatLng = { lat: pos.lat, lng: pos.lng };
+    updateReportLocationText(pos.lat, pos.lng);
+  });
+
+  updateReportLocationText(latlng.lat, latlng.lng);
+}
+
+async function updateReportLocationText(lat, lng) {
+  const input = document.getElementById('report-location');
+  input.value = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+  try {
+    const res = await fetch('https://nominatim.openstreetmap.org/reverse?' + new URLSearchParams({
+      format: 'json', lat: String(lat), lon: String(lng), zoom: '18', addressdetails: '1'
+    }), { headers: { 'Accept-Language': 'vi' } });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data?.display_name) input.value = shortenDisplayName(data.display_name);
+  } catch { /* reverse geocode thất bại — giữ lat/lng */ }
+}
+
+function useCurrentLocationForReport() {
+  if (!navigator.geolocation) {
+    showToast('Trình duyệt không hỗ trợ định vị.'); return;
+  }
+  const btn = document.getElementById('report-current-location');
+  btn.disabled = true;
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      btn.disabled = false;
+      const latlng = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      selectReportLocation(latlng);
+      reportMap.setView([latlng.lat, latlng.lng], 17);
+    },
+    () => {
+      btn.disabled = false;
+      showToast('Không thể lấy vị trí hiện tại. Hãy chọn trực tiếp trên bản đồ.');
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+  );
+}
+
+/* ---------------------------------------------------------------
+   23. MỞ / ĐÓNG MODAL BÁO CÁO
 --------------------------------------------------------------- */
 function openReportModal() {
-  pendingReportLatLng = null;
-  document.getElementById('report-location').value = '';
+  reportSelectedLatLng = null;
+  document.getElementById('report-location').value = 'Chưa chọn vị trí';
   document.getElementById('report-modal').classList.remove('hidden');
+
+  setTimeout(() => {
+    initReportMap();
+    if (reportMap) {
+      reportMap.invalidateSize();
+      // Ưu tiên hiển thị vị trí bắt đầu hiện tại nếu có
+      if (startLocation && isValidCoordinate(startLocation.lat, startLocation.lng)) {
+        reportMap.setView([startLocation.lat, startLocation.lng], 15);
+      }
+    }
+  }, 150);
 }
+
 function closeReportModal() {
   document.getElementById('report-modal').classList.add('hidden');
+  reportSelectedLatLng = null;
+  if (reportMarker && reportMap) {
+    reportMap.removeLayer(reportMarker);
+    reportMarker = null;
+  }
+  // Reset form
+  document.getElementById('report-desc').value = '';
+  // Reset level pills
+  document.querySelectorAll('.level-pill').forEach(p => p.classList.remove('checked'));
+  document.querySelector('.level-pill.low')?.classList.add('checked');
+  const lowInput = document.querySelector('input[name="level"][value="thap"]');
+  if (lowInput) lowInput.checked = true;
 }
-document.getElementById('level-group').addEventListener('change', function (e) {
+
+document.getElementById('level-group').addEventListener('change', e => {
   document.querySelectorAll('.level-pill').forEach(p => p.classList.remove('checked'));
   e.target.closest('.level-pill').classList.add('checked');
 });
 
-/* addIncident(): thêm 1 sự cố mới do người dùng báo cáo vào danh sách
-   demo (chưa gửi lên backend). Trong bản thực tế, hàm này sẽ POST dữ
-   liệu lên API rồi cập nhật lại incidents từ server. */
-function addIncident(newIncident) {
-  incidents.push(newIncident);
-  renderIncidents();
-}
-
+/* ---------------------------------------------------------------
+   24. SUBMIT REPORT — bắt buộc chọn vị trí trên mini map
+--------------------------------------------------------------- */
 function submitReport() {
+  if (!reportSelectedLatLng) {
+    showToast('Vui lòng chọn vị trí sự cố trên bản đồ.');
+    return;
+  }
+
   const type = document.getElementById('report-type').value;
   const level = document.querySelector('input[name="level"]:checked').value;
   const desc = document.getElementById('report-desc').value.trim() || 'Không có mô tả.';
-  const latlng = pendingReportLatLng || map.getCenter();
 
-  const newIncident = {
-    id: Date.now(),
+  addOrConfirmIncident({
     type, level,
-    lat: latlng.lat, lng: latlng.lng,
-    time: 'Vừa xong',
-    confirms: 1,
-    desc
-  };
+    lat: reportSelectedLatLng.lat,
+    lng: reportSelectedLatLng.lng,
+    desc,
+  });
 
-  addIncident(newIncident);
   closeReportModal();
   showToast('Cảm ơn bạn! Báo cáo đã được ghi nhận.');
-
-  // reset form
-  document.getElementById('report-desc').value = '';
 }
 
 /* ---------------------------------------------------------------
-   14. TOAST THÔNG BÁO NHỎ
+   25. TOAST
 --------------------------------------------------------------- */
 let toastTimer;
 function showToast(msg) {
@@ -977,16 +1217,17 @@ function showToast(msg) {
 }
 
 /* ---------------------------------------------------------------
-   15. BOTTOM SHEET (MOBILE)
+   26. BOTTOM SHEET (MOBILE)
 --------------------------------------------------------------- */
 function toggleSheet() {
   document.getElementById('sidebar').classList.toggle('expanded');
 }
 
 /* ---------------------------------------------------------------
-   16. KHỞI CHẠY ỨNG DỤNG
+   27. KHỞI CHẠY
 --------------------------------------------------------------- */
 window.addEventListener('DOMContentLoaded', initMap);
 </script>
 </body>
+</html>
 </html>
