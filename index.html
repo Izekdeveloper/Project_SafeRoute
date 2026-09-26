@@ -13,7 +13,8 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
-
+<link rel="stylesheet" href="./css/main.css">
+<link rel="stylesheet" href="./css/responsive.css">
 </head>
 <body>
 
@@ -24,7 +25,10 @@
        ============================================================ -->
   <header id="header">
     <div class="brand">
-      <div class="brand-mark"><i class="fa-solid fa-shield-halved"></i></div>
+      <div class="brand-mark">
+        <i class="fa-solid fa-shield-halved">
+        </i>
+    </div>
       <div class="brand-text">
         <div class="name">Safe<span>Route</span></div>
         <div class="tagline">Đi an toàn hơn mỗi ngày</div>
@@ -47,9 +51,29 @@
       <p class="panel-title">TÌM ĐƯỜNG</p>
       <div class="search-card">
         <div class="location-row">
-          <div class="location-field start">
+          <div class="location-field start" id="start-field">
             <i class="fa-solid fa-location-dot"></i>
-            <input id="start-input" type="text" placeholder="Điểm bắt đầu" value="Chợ Bến Thành" />
+            <input
+              id="start-input"
+              type="text"
+              placeholder="Điểm bắt đầu"
+              value="Chợ Bến Thành"
+              autocomplete="off"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded="false"
+              aria-controls="start-suggestions"
+            />
+            <button
+              type="button"
+              id="gps-btn"
+              class="location-action-btn"
+              title="Sử dụng vị trí hiện tại"
+              aria-label="Sử dụng vị trí hiện tại"
+            >
+              <i class="fa-solid fa-location-crosshairs"></i>
+            </button>
+            <ul id="start-suggestions" class="suggestions-dropdown hidden" role="listbox" aria-label="Gợi ý điểm bắt đầu"></ul>
           </div>
           <div class="location-field end">
             <i class="fa-solid fa-flag-checkered"></i>
@@ -97,15 +121,21 @@
       <!-- Chú thích mức độ rủi ro -->
       <div id="legend">
         <div class="legend-title">Mức độ rủi ro</div>
-        <div class="legend-item"><span class="dot" style="background:var(--risk-low)"></span>Rủi ro thấp</div>
-        <div class="legend-item"><span class="dot" style="background:var(--risk-mid)"></span>Rủi ro trung bình</div>
-        <div class="legend-item"><span class="dot" style="background:var(--risk-high)"></span>Rủi ro cao</div>
+        <div class="legend-item">
+            <span class="dot" style="background:var(--risk-low)"></span>Rủi ro thấp</div>
+        <div class="legend-item">
+            <span class="dot" style="background:var(--risk-mid)"></span>Rủi ro trung bình</div>
+        <div class="legend-item">
+            <span class="dot" style="background:var(--risk-high)"></span>Rủi ro cao</div>
       </div>
 
       <!-- Cảnh báo gần bạn -->
       <div id="nearby-panel">
-        <div class="np-title"><i class="fa-solid fa-triangle-exclamation"></i>Cảnh báo gần bạn</div>
-        <div id="nearby-list"></div>
+        <div class="np-title">
+            <i class="fa-solid fa-triangle-exclamation"></i>Cảnh báo gần bạn
+        </div>
+        <div id="nearby-list">
+        </div>
       </div>
 
       <!-- Nút nổi báo cáo sự cố -->
@@ -272,6 +302,14 @@ let routeLayerGroup;
 let selectedMode = 'balanced';
 let pendingReportLatLng = null; // vị trí người dùng chọn khi báo cáo
 
+/* ---- State cho tính năng CHỌN ĐIỂM BẮT ĐẦU (GPS / click bản đồ / tìm kiếm) ---- */
+let startLocation = { lat: 10.7725, lng: 106.6980, label: 'Chợ Bến Thành', source: 'default' };
+let endLocation = null;          // dự phòng cho việc chọn điểm đến bằng toạ độ (chưa triển khai ở bản này)
+let startMarker = null;
+let selectingStartOnMap = false; // true khi người dùng đang chờ click bản đồ để chọn điểm bắt đầu
+let startSearchTimer = null;
+let startSearchToken = 0;        // đảm bảo chỉ áp dụng kết quả của lần tìm kiếm mới nhất
+
 /* ---------------------------------------------------------------
    5. KHỞI TẠO BẢN ĐỒ (mặc định trung tâm TP.HCM)
 --------------------------------------------------------------- */
@@ -279,7 +317,7 @@ function initMap() {
   map = L.map('map', { zoomControl: false }).setView([10.7769, 106.7009], 14);
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap contributors',
+    attribution: '&copy; SafeRoute built by IzekNguyen',
     maxZoom: 19
   }).addTo(map);
 
@@ -288,18 +326,33 @@ function initMap() {
   incidentLayerGroup = L.layerGroup().addTo(map);
   routeLayerGroup = L.layerGroup().addTo(map);
 
-  // Khi modal báo cáo đang mở, cho phép chạm bản đồ để chọn vị trí sự cố
+  // Thứ tự xử lý click bản đồ (không được xung đột nhau):
+  //   1) Modal báo cáo sự cố đang mở  -> chọn vị trí báo cáo (hành vi cũ, giữ nguyên)
+  //   2) Đang ở chế độ chọn điểm bắt đầu -> chọn start location
+  //   3) Ngoài 2 trường hợp trên -> không làm gì
   map.on('click', function (e) {
     const modal = document.getElementById('report-modal');
     if (!modal.classList.contains('hidden')) {
       pendingReportLatLng = e.latlng;
       document.getElementById('report-location').value =
         e.latlng.lat.toFixed(5) + ', ' + e.latlng.lng.toFixed(5);
+      return;
     }
+    if (selectingStartOnMap) {
+      selectStartFromMap(e.latlng);
+      return;
+    }
+    // không thuộc 2 trường hợp trên -> bỏ qua
   });
 
   renderIncidents();
   renderNearbyPanel();
+
+  // Hiển thị sẵn marker cho điểm bắt đầu mặc định + gắn sự kiện GPS/tìm kiếm
+  if (startLocation) {
+    updateStartMarker(startLocation.lat, startLocation.lng, startLocation.label);
+  }
+  initStartLocationControls();
 }
 
 /* ---------------------------------------------------------------
@@ -329,6 +382,237 @@ function calculateRiskScore(route) {
 }
 
 /* ---------------------------------------------------------------
+   6b. CHỌN ĐIỂM BẮT ĐẦU — GPS / click bản đồ / tìm kiếm Nominatim
+   startLocation luôn ở dạng { lat, lng, label, source } để sau này
+   findSafeRoute() có thể dùng toạ độ thật thay vì chỉ text.
+--------------------------------------------------------------- */
+
+// Thoát HTML cơ bản trước khi chèn dữ liệu từ Nominatim vào innerHTML
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+
+// Rút gọn display_name của Nominatim (giữ 3 phần đầu) cho gọn UI
+function shortenDisplayName(displayName) {
+  const parts = String(displayName).split(',').map(p => p.trim());
+  return parts.slice(0, 3).join(', ');
+}
+
+// Gán điểm bắt đầu mới (dùng chung cho cả GPS / click bản đồ / tìm kiếm)
+function setStartLocation(lat, lng, label, source) {
+  startLocation = { lat, lng, label, source };
+  document.getElementById('start-input').value = label;
+  updateStartMarker(lat, lng, label);
+}
+
+// Vẽ/di chuyển marker điểm bắt đầu — icon khác hẳn marker sự cố
+function updateStartMarker(lat, lng, label) {
+  if (startMarker) {
+    map.removeLayer(startMarker);
+    startMarker = null;
+  }
+  const icon = L.divIcon({
+    className: '',
+    html: '<div class="start-marker-icon"><i class="fa-solid fa-person-walking"></i></div>',
+    iconSize: [34, 34],
+    iconAnchor: [17, 32]
+  });
+  startMarker = L.marker([lat, lng], { icon, zIndexOffset: 1000 }).addTo(map);
+  startMarker.bindPopup(`
+    <div class="popup-box">
+      <div class="p-head"><i class="fa-solid fa-location-dot" style="color:var(--primary)"></i> Điểm bắt đầu</div>
+      <div class="p-row"><b>${escapeHtml(label)}</b></div>
+    </div>
+  `);
+}
+
+/* ---- 1) GPS: chỉ xin quyền khi người dùng bấm nút, không tự động khi load ---- */
+function handleGpsClick() {
+  if (!navigator.geolocation) {
+    showToast('Trình duyệt không hỗ trợ định vị.');
+    return;
+  }
+  if (!window.isSecureContext) {
+    showToast('GPS yêu cầu HTTPS hoặc localhost.');
+    return;
+  }
+
+  const gpsBtn = document.getElementById('gps-btn');
+  gpsBtn.classList.add('loading');
+
+  navigator.geolocation.getCurrentPosition(
+    function (pos) {
+      gpsBtn.classList.remove('loading');
+      const { latitude, longitude } = pos.coords;
+      setStartLocation(latitude, longitude, 'Vị trí hiện tại', 'gps');
+      map.setView([latitude, longitude], 16);
+      showToast('Đã lấy vị trí hiện tại.');
+    },
+    function (err) {
+      gpsBtn.classList.remove('loading');
+      let msg = 'Không thể lấy vị trí hiện tại.';
+      if (err.code === err.PERMISSION_DENIED) msg = 'Bạn chưa cho phép truy cập vị trí.';
+      else if (err.code === err.POSITION_UNAVAILABLE) msg = 'Không thể xác định vị trí hiện tại.';
+      else if (err.code === err.TIMEOUT) msg = 'Lấy vị trí quá lâu, vui lòng thử lại.';
+      showToast(msg);
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+  );
+}
+
+/* ---- 2) Chọn điểm bắt đầu bằng click trên bản đồ ---- */
+function enableSelectStartOnMap() {
+  selectingStartOnMap = true;
+  map.getContainer().classList.add('selecting-start');
+  showToast('Chạm vào bản đồ để chọn điểm bắt đầu.');
+}
+function disableSelectStartOnMap() {
+  selectingStartOnMap = false;
+  map.getContainer().classList.remove('selecting-start');
+}
+
+function selectStartFromMap(latlng) {
+  const lat = latlng.lat, lng = latlng.lng;
+  disableSelectStartOnMap();
+
+  const fallbackLabel = lat.toFixed(5) + ', ' + lng.toFixed(5);
+  setStartLocation(lat, lng, fallbackLabel, 'map');
+
+  // Cố gắng reverse geocode để hiển thị tên địa điểm dễ đọc hơn toạ độ
+  reverseGeocodeStartLabel(lat, lng);
+}
+
+function reverseGeocodeStartLabel(lat, lng) {
+  fetch('https://nominatim.openstreetmap.org/reverse?' + new URLSearchParams({
+    format: 'json', lat: String(lat), lon: String(lng), zoom: '18', addressdetails: '1'
+  }), { headers: { 'Accept-Language': 'vi' } })
+    .then(res => (res.ok ? res.json() : Promise.reject(new Error('reverse geocode failed'))))
+    .then(data => {
+      // Nếu người dùng đã chọn điểm khác trong lúc chờ phản hồi thì bỏ qua
+      if (!startLocation || startLocation.lat !== lat || startLocation.lng !== lng) return;
+      if (data && data.display_name) {
+        const label = shortenDisplayName(data.display_name);
+        startLocation.label = label;
+        document.getElementById('start-input').value = label;
+      }
+    })
+    .catch(() => { /* Reverse geocode lỗi -> giữ nguyên toạ độ đã hiển thị, không crash */ });
+}
+
+/* ---- 3) Nhập địa điểm + gợi ý từ Nominatim (debounce 400ms) ---- */
+function initStartLocationControls() {
+  const input = document.getElementById('start-input');
+  const gpsBtn = document.getElementById('gps-btn');
+
+  gpsBtn.addEventListener('click', handleGpsClick);
+
+  input.addEventListener('focus', function () {
+    if (input.value.trim().length < 2) showStartQuickOptions();
+  });
+
+  input.addEventListener('input', function () {
+    startLocation = null; // toạ độ cũ không còn hợp lệ khi người dùng gõ lại
+    const query = input.value.trim();
+    clearTimeout(startSearchTimer);
+    if (query.length < 2) {
+      showStartQuickOptions();
+      return;
+    }
+    startSearchTimer = setTimeout(() => searchStartLocation(query), 400);
+  });
+
+  // Đóng dropdown khi click ra ngoài ô điểm bắt đầu
+  document.addEventListener('click', function (e) {
+    if (!e.target.closest('#start-field')) hideStartSuggestions();
+  });
+}
+
+// Gợi ý nhanh khi ô còn trống/ngắn: cho phép chọn trên bản đồ
+function showStartQuickOptions() {
+  const suggestBox = document.getElementById('start-suggestions');
+  suggestBox.innerHTML = `
+    <li class="suggestion-item pick-map-option" role="option">
+      <i class="fa-solid fa-map-location-dot"></i>
+      <div><div class="s-main">Chọn trên bản đồ</div></div>
+    </li>`;
+  suggestBox.classList.remove('hidden');
+  document.getElementById('start-input').setAttribute('aria-expanded', 'true');
+
+  suggestBox.querySelector('.pick-map-option').addEventListener('click', function () {
+    hideStartSuggestions();
+    enableSelectStartOnMap();
+  });
+}
+
+function hideStartSuggestions() {
+  const suggestBox = document.getElementById('start-suggestions');
+  suggestBox.classList.add('hidden');
+  suggestBox.innerHTML = '';
+  document.getElementById('start-input').setAttribute('aria-expanded', 'false');
+}
+
+async function searchStartLocation(query) {
+  const token = ++startSearchToken; // dùng để bỏ kết quả cũ nếu có query mới hơn
+  try {
+    const res = await fetch('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({
+      format: 'json', q: query, limit: '5', countrycodes: 'vn', addressdetails: '1'
+    }), { headers: { 'Accept-Language': 'vi' } });
+
+    if (token !== startSearchToken) return;
+    if (!res.ok) throw new Error('Nominatim error');
+    const results = await res.json();
+    if (token !== startSearchToken) return;
+    renderStartSuggestions(results);
+  } catch (err) {
+    if (token !== startSearchToken) return;
+    showToast('Không thể tìm địa điểm. Vui lòng thử lại.');
+  }
+}
+
+function renderStartSuggestions(results) {
+  const suggestBox = document.getElementById('start-suggestions');
+
+  if (!results || results.length === 0) {
+    suggestBox.innerHTML = '<li class="suggestion-empty">Không tìm thấy địa điểm phù hợp.</li>';
+    suggestBox.classList.remove('hidden');
+    return;
+  }
+
+  suggestBox.innerHTML = results.map((r, i) => {
+    const shortName = shortenDisplayName(r.display_name);
+    const mainPart = shortName.split(',')[0];
+    const subPart = shortName.split(',').slice(1).join(',').trim();
+    return `
+      <li class="suggestion-item" role="option" data-index="${i}">
+        <i class="fa-solid fa-location-dot"></i>
+        <div>
+          <div class="s-main">${escapeHtml(mainPart)}</div>
+          ${subPart ? `<div class="s-sub">${escapeHtml(subPart)}</div>` : ''}
+        </div>
+      </li>`;
+  }).join('');
+
+  suggestBox.classList.remove('hidden');
+  document.getElementById('start-input').setAttribute('aria-expanded', 'true');
+
+  suggestBox.querySelectorAll('.suggestion-item[data-index]').forEach(item => {
+    item.addEventListener('click', function () {
+      const idx = Number(item.dataset.index);
+      const r = results[idx];
+      const label = shortenDisplayName(r.display_name);
+      const lat = Number(r.lat), lng = Number(r.lon);
+
+      setStartLocation(lat, lng, label, 'search');
+      map.setView([lat, lng], 16);
+      hideStartSuggestions();
+      showToast('Đã chọn điểm bắt đầu.');
+    });
+  });
+}
+
+/* ---------------------------------------------------------------
    7. HÀM TÌM ĐƯỜNG AN TOÀN (mô phỏng Dijkstra/A*)
    alpha (mức ưu tiên an toàn) được quyết định bởi mode đã chọn:
       fastest  -> alpha = 0
@@ -338,10 +622,12 @@ function calculateRiskScore(route) {
 --------------------------------------------------------------- */
 function findSafeRoute(start, end, mode) {
   // ---- DEMO: trả thẳng dữ liệu mẫu ứng với 3 chế độ ----
+  // start giờ là object { lat, lng, label, source } (xem setStartLocation ở trên)
+  // thay vì chỉ là text, để sẵn sàng kết nối OSRM/GraphHopper/engine thật sau này.
   // Thuật toán thật sẽ: dựng graph từ OSM -> chạy Dijkstra/A* với
   // hàm trọng số weight(edge) = edge.distance * (1 + alpha * edge.riskScore)
   // rồi trả về đường đi có tổng weight nhỏ nhất.
-  console.log('findSafeRoute(demo):', start, '->', end, '| mode =', mode);
+  console.log('findSafeRoute(demo): start =', start, '-> end =', end, '| mode =', mode);
   return Object.values(ROUTES_DATA);
 }
 
@@ -453,13 +739,19 @@ function chooseRoute(routeId) {
    11. XỬ LÝ NÚT "TÌM ĐƯỜNG AN TOÀN"
 --------------------------------------------------------------- */
 function onFindRouteClick() {
-  const start = document.getElementById('start-input').value.trim();
   const end = document.getElementById('end-input').value.trim();
-  if (!start || !end) {
-    showToast('Vui lòng nhập điểm bắt đầu và điểm đến.');
+
+  // Ưu tiên toạ độ đã chọn (GPS / click bản đồ / tìm kiếm) thay vì text thô
+  if (!startLocation) {
+    showToast('Vui lòng chọn điểm bắt đầu.');
     return;
   }
-  const routes = findSafeRoute(start, end, selectedMode);
+  if (!end) {
+    showToast('Vui lòng nhập điểm đến.');
+    return;
+  }
+
+  const routes = findSafeRoute(startLocation, end, selectedMode);
   renderRoutes(routes, selectedMode);
 
   // Trên mobile, tự mở rộng bottom sheet để thấy kết quả
@@ -469,9 +761,28 @@ function onFindRouteClick() {
 }
 
 function swapLocations() {
-  const s = document.getElementById('start-input');
-  const e = document.getElementById('end-input');
-  const tmp = s.value; s.value = e.value; e.value = tmp;
+  const startInput = document.getElementById('start-input');
+  const endInput = document.getElementById('end-input');
+
+  // Đổi chỗ text hiển thị
+  const tmpText = startInput.value;
+  startInput.value = endInput.value;
+  endInput.value = tmpText;
+
+  // Đổi chỗ toạ độ đã lưu tương ứng (endLocation hiện chưa được chọn ở bản này
+  // nên nếu start có toạ độ mà end thì không, sau khi swap start sẽ mất toạ độ
+  // — đúng theo quy tắc: không có toạ độ thì không thể "chọn" — người dùng
+  // cần chọn lại điểm bắt đầu bằng GPS/bản đồ/tìm kiếm).
+  const tmpLoc = startLocation;
+  startLocation = endLocation;
+  endLocation = tmpLoc;
+
+  if (startLocation) {
+    updateStartMarker(startLocation.lat, startLocation.lng, startLocation.label);
+  } else if (startMarker) {
+    map.removeLayer(startMarker);
+    startMarker = null;
+  }
 }
 
 /* ---------------------------------------------------------------
