@@ -412,7 +412,6 @@ let startLocation = { lat: 10.7725, lng: 106.6980, label: 'Chợ Bến Thành', 
 let endLocation = null;
 let startMarker = null;
 let endMarker = null;
-let selectingStartOnMap = false;
 let startSearchTimer = null;
 let endSearchTimer = null;
 let startSearchToken = 0;
@@ -586,10 +585,58 @@ function initMap() {
   routeLayerGroup = L.layerGroup().addTo(map);
   transportFallbackLayerGroup = L.layerGroup().addTo(map);
 
-  // Bản đồ chính: chỉ xử lý click để chọn điểm bắt đầu (chế độ selectingStartOnMap)
-  // KHÔNG xử lý click báo cáo sự cố — modal dùng mini map riêng
+  // Theo dõi chính xác sự khác biệt giữa TAP/CLICK và DRAG/ZOOM trên bản đồ lớn
+  let mapWasDragged = false;
+  let pointerDownPos = null;
+
+  const mapEl = document.getElementById('map');
+  if (mapEl) {
+    mapEl.addEventListener('pointerdown', e => {
+      pointerDownPos = { x: e.clientX, y: e.clientY };
+      mapWasDragged = false;
+    }, { passive: true });
+
+    mapEl.addEventListener('pointermove', e => {
+      if (!pointerDownPos) return;
+      const dx = e.clientX - pointerDownPos.x;
+      const dy = e.clientY - pointerDownPos.y;
+      if (Math.hypot(dx, dy) > 8) {
+        mapWasDragged = true;
+      }
+    }, { passive: true });
+
+    const clearPointer = () => {
+      setTimeout(() => {
+        pointerDownPos = null;
+        mapWasDragged = false;
+      }, 150);
+    };
+    mapEl.addEventListener('pointerup', clearPointer, { passive: true });
+    mapEl.addEventListener('pointercancel', clearPointer, { passive: true });
+  }
+
+  map.on('movestart zoomstart dragstart', () => {
+    mapWasDragged = true;
+  });
+  map.on('moveend zoomend dragend', () => {
+    setTimeout(() => {
+      mapWasDragged = false;
+    }, 150);
+  });
+
+  // Bản đồ lớn: CLICK/TAP trực tiếp vào vùng bản đồ trống để chọn điểm bắt đầu
   map.on('click', function (e) {
-    if (selectingStartOnMap) { selectStartFromMap(e.latlng); }
+    // 1. Nếu vừa kéo hoặc zoom bản đồ -> tuyệt đối KHÔNG chọn vị trí
+    if (mapWasDragged) return;
+
+    // 2. Không làm ảnh hưởng khi bấm vào marker, popup, control
+    const target = e.originalEvent?.target;
+    if (target && target.closest('.leaflet-marker-icon, .leaflet-popup, .leaflet-control, .transport-hub-combo, #report-fab')) {
+      return;
+    }
+
+    // 3. Chọn điểm bắt đầu trực tiếp tại tọa độ click/tap
+    selectStartFromMap(e.latlng);
   });
 
   renderIncidents();
@@ -599,6 +646,7 @@ function initMap() {
   initStartLocationControls();
   initEndLocationControls();
   initReportLocationControls();
+  initBottomSheetGestures();
 }
 
 /* ---------------------------------------------------------------
@@ -668,22 +716,17 @@ function handleGpsClick() {
   );
 }
 
-function enableSelectStartOnMap() {
-  selectingStartOnMap = true;
-  map.getContainer().classList.add('selecting-start');
-  showToast('Chạm vào bản đồ để chọn điểm bắt đầu.');
-}
-function disableSelectStartOnMap() {
-  selectingStartOnMap = false;
-  map.getContainer().classList.remove('selecting-start');
-}
 function selectStartFromMap(latlng) {
   const { lat, lng } = latlng;
-  disableSelectStartOnMap();
   const fallback = lat.toFixed(5) + ', ' + lng.toFixed(5);
   setStartLocation(lat, lng, fallback, 'map');
   reverseGeocodeStartLabel(lat, lng);
+  showToast('Đã chọn điểm bắt đầu trên bản đồ.');
+  if (window.innerWidth <= 820) {
+    openSheet();
+  }
 }
+
 function reverseGeocodeStartLabel(lat, lng) {
   fetch('https://nominatim.openstreetmap.org/reverse?' + new URLSearchParams({
     format: 'json', lat: String(lat), lon: String(lng), zoom: '18', addressdetails: '1'
@@ -695,6 +738,13 @@ function reverseGeocodeStartLabel(lat, lng) {
         const lbl = shortenDisplayName(d.display_name);
         startLocation.label = lbl;
         document.getElementById('start-input').value = lbl;
+        if (startMarker) {
+          startMarker.bindPopup(`
+            <div class="popup-box">
+              <div class="p-head"><i class="fa-solid fa-location-dot" style="color:var(--primary)"></i> Điểm bắt đầu</div>
+              <div class="p-row"><b>${escapeHtml(lbl)}</b></div>
+            </div>`);
+        }
       }
     }).catch(() => {});
 }
@@ -702,6 +752,7 @@ function reverseGeocodeStartLabel(lat, lng) {
 function initStartLocationControls() {
   const input = document.getElementById('start-input');
   document.getElementById('gps-btn').addEventListener('click', handleGpsClick);
+
   input.addEventListener('focus', () => { if (input.value.trim().length < 2) showStartQuickOptions(); });
   input.addEventListener('input', () => {
     startLocation = null;
@@ -722,11 +773,13 @@ function showStartQuickOptions() {
   const box = document.getElementById('start-suggestions');
   box.innerHTML = `<li class="suggestion-item pick-map-option" role="option">
     <i class="fa-solid fa-map-location-dot"></i>
-    <div><div class="s-main">Chọn trên bản đồ</div></div></li>`;
+    <div><div class="s-main">Chạm trực tiếp vào bản đồ để chọn vị trí</div></div></li>`;
   box.classList.remove('hidden');
   document.getElementById('start-input').setAttribute('aria-expanded', 'true');
   box.querySelector('.pick-map-option').addEventListener('click', () => {
-    hideStartSuggestions(); enableSelectStartOnMap();
+    hideStartSuggestions();
+    showToast('Chạm vào bản đồ để chọn điểm bắt đầu.');
+    if (window.innerWidth <= 820) closeSheet();
   });
 }
 function hideStartSuggestions() {
@@ -1627,7 +1680,7 @@ async function onFindRouteClick() {
 
     renderRoutes(routes, selectedMode);
 
-    if (window.innerWidth <= 820) document.getElementById('sidebar').classList.add('expanded');
+    if (window.innerWidth <= 820) openSheet();
 
   } catch (err) {
     console.error('SafeRoute error:', err);
@@ -1641,7 +1694,7 @@ async function onFindRouteClick() {
           selectedRouteId = null;
           renderTransportFallback(fallbackResult);
           showToast('Đang đề xuất phương án kết hợp trung chuyển.');
-          if (window.innerWidth <= 820) document.getElementById('sidebar').classList.add('expanded');
+          if (window.innerWidth <= 820) openSheet();
           return;
         }
       } catch (fbErr) {
@@ -1976,10 +2029,135 @@ function showToast(msg) {
 }
 
 /* ---------------------------------------------------------------
-   26. BOTTOM SHEET (MOBILE)
+   26. BOTTOM SHEET (MOBILE) & GESTURES
 --------------------------------------------------------------- */
+let didDrag = false;
+
+function isSheetExpanded() {
+  const sidebar = document.getElementById('sidebar');
+  return sidebar ? sidebar.classList.contains('expanded') : false;
+}
+
+function openSheet() {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return;
+  sidebar.style.transform = '';
+  sidebar.classList.add('expanded');
+}
+
+function closeSheet() {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return;
+  sidebar.style.transform = '';
+  sidebar.classList.remove('expanded');
+}
+
 function toggleSheet() {
-  document.getElementById('sidebar').classList.toggle('expanded');
+  if (didDrag) return;
+  if (isSheetExpanded()) {
+    closeSheet();
+  } else {
+    openSheet();
+  }
+}
+
+function isHandleOrTopZone(e, sidebar) {
+  if (e.target.closest('.sheet-handle')) return true;
+  const rect = sidebar.getBoundingClientRect();
+  // Vùng 50px tính từ đỉnh của sidebar, loại trừ các phần tử tương tác
+  if (e.clientY <= rect.top + 50 && !e.target.closest('input, button, select, a, textarea')) {
+    return true;
+  }
+  return false;
+}
+
+function initBottomSheetGestures() {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return;
+
+  let startY = 0;
+  let startX = 0;
+  let startExpanded = false;
+  let baseTranslate = 0;
+  let maxTranslate = 0;
+  let isDragging = false;
+  let activePointerId = null;
+
+  function onPointerDown(e) {
+    if (window.innerWidth > 820) return;
+    if (!isHandleOrTopZone(e, sidebar)) return;
+
+    activePointerId = e.pointerId;
+    startY = e.clientY;
+    startX = e.clientX;
+    startExpanded = sidebar.classList.contains('expanded');
+    const sidebarHeight = sidebar.offsetHeight;
+    maxTranslate = Math.max(0, sidebarHeight - 128);
+    baseTranslate = startExpanded ? 0 : maxTranslate;
+    isDragging = false;
+  }
+
+  function onPointerMove(e) {
+    if (activePointerId === null || e.pointerId !== activePointerId) return;
+    const deltaY = e.clientY - startY;
+    const deltaX = e.clientX - startX;
+
+    if (!isDragging) {
+      if (Math.abs(deltaY) > 6 && Math.abs(deltaY) > Math.abs(deltaX)) {
+        isDragging = true;
+        sidebar.classList.add('sheet-dragging');
+        try {
+          e.target.setPointerCapture(e.pointerId);
+        } catch (_) {}
+      } else {
+        return;
+      }
+    }
+
+    if (e.cancelable) e.preventDefault();
+
+    let currentTranslate = baseTranslate + deltaY;
+    if (currentTranslate < 0) {
+      currentTranslate = currentTranslate * 0.2;
+    } else if (currentTranslate > maxTranslate) {
+      currentTranslate = maxTranslate + (currentTranslate - maxTranslate) * 0.2;
+    }
+    sidebar.style.transform = `translateY(${currentTranslate}px)`;
+  }
+
+  function onPointerUp(e) {
+    if (activePointerId === null || e.pointerId !== activePointerId) return;
+    activePointerId = null;
+    sidebar.classList.remove('sheet-dragging');
+    sidebar.style.transform = '';
+
+    if (isDragging) {
+      const deltaY = e.clientY - startY;
+      didDrag = true;
+      setTimeout(() => { didDrag = false; }, 250);
+
+      const SHEET_DRAG_THRESHOLD = 60;
+      if (startExpanded) {
+        if (deltaY > SHEET_DRAG_THRESHOLD) {
+          closeSheet();
+        } else {
+          openSheet();
+        }
+      } else {
+        if (deltaY < -SHEET_DRAG_THRESHOLD) {
+          openSheet();
+        } else {
+          closeSheet();
+        }
+      }
+      isDragging = false;
+    }
+  }
+
+  sidebar.addEventListener('pointerdown', onPointerDown);
+  window.addEventListener('pointermove', onPointerMove, { passive: false });
+  window.addEventListener('pointerup', onPointerUp);
+  window.addEventListener('pointercancel', onPointerUp);
 }
 
 /* ---------------------------------------------------------------

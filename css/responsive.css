@@ -61,9 +61,12 @@
     padding:8px 16px calc(24px + env(safe-area-inset-bottom, 0px));
   }
   #sidebar.expanded{transform:translateY(0);}
+  #sidebar.sheet-dragging{transition:none !important;}
   .sheet-handle{
-    display:flex;justify-content:center;padding:4px 0 10px;
+    display:flex;justify-content:center;padding:6px 0 12px;
+    touch-action:none;user-select:none;cursor:grab;
   }
+  .sheet-handle:active{cursor:grabbing;}
   .sheet-handle span{width:38px;height:5px;border-radius:99px;background:var(--border);}
   #nearby-panel{width:180px;top:12px;right:10px;}
   #report-fab{bottom:calc(150px + env(safe-area-inset-bottom, 0px));}

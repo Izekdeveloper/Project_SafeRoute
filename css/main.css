@@ -151,6 +151,7 @@ input,select,textarea{font-family:inherit;}
 .location-action-btn:hover{background:var(--primary-light);border-color:var(--primary);}
 .location-action-btn:active{transform:scale(.92);}
 .location-action-btn.loading i{animation:sr-spin .9s linear infinite;}
+.location-action-btn.active{background:var(--primary);color:#fff;border-color:var(--primary);}
 @keyframes sr-spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
 
 /* ---- Dropdown gợi ý địa điểm (Nominatim) ---- */
