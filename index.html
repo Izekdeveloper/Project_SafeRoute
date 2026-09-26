@@ -10,6 +10,142 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="./css/main.css">
 <link rel="stylesheet" href="./css/responsive.css">
+<style>
+.transport-hub-combo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.transport-hub-note {
+  background: #ffffff;
+  border: 1.5px solid #2f7ee0;
+  border-radius: 8px;
+  padding: 5px 9px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+  white-space: nowrap;
+  text-align: center;
+  margin-bottom: 6px;
+  position: relative;
+}
+.transport-hub-note::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 6px 6px 0;
+  border-style: solid;
+  border-color: #2f7ee0 transparent transparent;
+}
+.transport-hub-note .th-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.transport-hub-note .th-sub {
+  font-size: 10px;
+  font-weight: 700;
+  color: #2f7ee0;
+}
+.transport-hub-marker {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 2.5px solid #2f7ee0;
+  color: #2f7ee0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  box-shadow: 0 4px 12px rgba(47, 126, 224, 0.35);
+}
+.transport-hub-marker.railway {
+  border-color: #f08a1c;
+  color: #f08a1c;
+  box-shadow: 0 4px 12px rgba(240, 138, 28, 0.35);
+}
+.transport-fallback-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.transport-fallback-card .tf-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(47, 126, 224, 0.1);
+  color: #2f7ee0;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 8px;
+  border-radius: 6px;
+  align-self: flex-start;
+  text-transform: uppercase;
+}
+.transport-fallback-card .tf-notice {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-sub);
+  margin: 0;
+}
+.transport-fallback-card .tf-leg-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.transport-fallback-card .tf-leg-card.transit {
+  border-left: 3px solid #0ea5e9;
+}
+.transport-fallback-card .tf-leg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.transport-fallback-card .tf-leg-tag {
+  font-weight: 700;
+  color: #2f7ee0;
+}
+.transport-fallback-card .tf-leg-tag.plane {
+  color: #0ea5e9;
+}
+.transport-fallback-card .tf-leg-tag.train {
+  color: #f08a1c;
+}
+.transport-fallback-card .tf-leg-dest {
+  font-size: 11.5px;
+  color: var(--text-sub);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+.transport-fallback-card .tf-transit-note {
+  font-size: 11px;
+  color: var(--text-sub);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-style: italic;
+}
+</style>
 </head>
 <body>
 
@@ -268,7 +404,7 @@ let incidents = [];
 /* ---------------------------------------------------------------
    3. TRẠNG THÁI CHUNG
 --------------------------------------------------------------- */
-let map, incidentLayerGroup, routeLayerGroup;
+let map, incidentLayerGroup, routeLayerGroup, transportFallbackLayerGroup;
 let selectedMode = 'balanced';
 
 // Start / end
@@ -283,6 +419,8 @@ let startSearchToken = 0;
 let endSearchToken = 0;
 let isFindingRoute = false;
 let currentRoutes = [];
+let selectedRouteId = null;
+let transportFallback = null;
 
 // Mini map báo cáo — hoàn toàn độc lập với bản đồ chính
 let reportMap = null;
@@ -446,6 +584,7 @@ function initMap() {
 
   incidentLayerGroup = L.layerGroup().addTo(map);
   routeLayerGroup = L.layerGroup().addTo(map);
+  transportFallbackLayerGroup = L.layerGroup().addTo(map);
 
   // Bản đồ chính: chỉ xử lý click để chọn điểm bắt đầu (chế độ selectingStartOnMap)
   // KHÔNG xử lý click báo cáo sự cố — modal dùng mini map riêng
@@ -702,21 +841,87 @@ function renderEndSuggestions(results) {
 }
 
 /* ---------------------------------------------------------------
-   12. ROUTING THẬT — OSRM API
-   lng,lat (OSRM) → lat,lng (Leaflet)
+   12. KIỂM TRA LÃNH THỔ VIỆT NAM & ROUTING OSRM
+   Định nghĩa polygon ranh giới Việt Nam + thuật toán Ray Casting
 --------------------------------------------------------------- */
-async function findSafeRoutes(start, end) {
-  const url = `https://router.project-osrm.org/route/v1/driving/` +
-    `${start.lng},${start.lat};${end.lng},${end.lat}` +
-    `?overview=full&geometries=geojson&steps=true&alternatives=true`;
+const VIETNAM_MAINLAND_POLYGON = [
+  // Tây Bắc (Điện Biên - Lai Châu - Lào Cai)
+  [22.40, 102.15], [22.50, 102.35], [22.75, 102.65], [22.80, 103.00], [22.65, 103.40],
+  [22.55, 103.80], [22.60, 104.00], [22.70, 104.15],
+  // Đông Bắc (Hà Giang - Cao Bằng - Lạng Sơn - Quảng Ninh)
+  [22.75, 104.45], [23.00, 104.85], [23.25, 105.15], [23.39, 105.32], [23.15, 105.65],
+  [23.00, 105.90], [22.95, 106.15], [22.88, 106.50], [22.75, 106.75], [22.50, 106.80],
+  [22.25, 106.55], [21.88, 106.82], [21.65, 107.05], [21.55, 107.30], [21.55, 107.50],
+  [21.53, 107.97],
+  // Bờ biển phía Đông (Quảng Ninh đến Cà Mau) - có đệm biển 5-15km
+  [21.55, 108.10], [21.20, 108.05], [20.75, 107.30], [20.50, 106.90], [20.00, 106.60],
+  [19.50, 106.20], [19.00, 106.10], [18.30, 106.50], [17.80, 106.85], [17.10, 107.40],
+  [16.40, 108.40], [15.80, 108.80], [15.20, 109.15], [14.50, 109.40], [13.70, 109.50],
+  [13.00, 109.60], [12.30, 109.45], [11.80, 109.40], [11.20, 109.20], [10.60, 108.40],
+  [10.20, 107.50], [10.15, 107.00], [9.80, 106.80], [9.20, 106.35], [8.40, 105.40],
+  // Mũi Cà Mau & Vịnh Thái Lan
+  [8.40, 104.60], [9.00, 104.50], [9.80, 104.60], [10.20, 104.20], [10.45, 104.42],
+  // Biên giới Tây Nam với Campuchia
+  [10.55, 104.70], [10.60, 104.95], [10.87, 105.18], [10.92, 105.32], [10.96, 105.75],
+  [10.90, 106.10], [11.05, 106.18], [11.12, 105.85], [11.35, 105.85], [11.60, 105.90],
+  [11.75, 105.98], [11.70, 106.30], [11.75, 106.45], [11.95, 106.65], [12.15, 106.85],
+  [12.28, 107.12], [12.15, 107.30], [12.35, 107.48], [12.50, 107.55], [12.80, 107.50],
+  [13.15, 107.45], [13.45, 107.52], [13.78, 107.50], [14.05, 107.52], [14.30, 107.50],
+  [14.69, 107.56],
+  // Biên giới Tây với Lào
+  [15.00, 107.65], [15.25, 107.55], [15.55, 107.45], [15.85, 107.40], [16.15, 107.25],
+  [16.32, 107.15], [16.50, 106.85], [16.62, 106.60], [16.85, 106.55], [17.15, 106.28],
+  [17.40, 105.95], [17.75, 105.75], [18.15, 105.45], [18.35, 105.18], [18.55, 105.25],
+  [18.85, 105.00], [19.15, 104.60], [19.38, 104.12], [19.65, 104.00], [19.95, 104.08],
+  [20.30, 104.50], [20.55, 104.62], [20.65, 104.82], [20.72, 104.60], [20.75, 104.30],
+  [20.90, 103.80], [21.05, 103.45], [21.25, 103.05], [21.50, 102.95], [21.80, 102.85],
+  [22.15, 102.40], [22.40, 102.15]
+];
 
+const PHU_QUOC_POLYGON = [
+  [9.95, 103.80], [10.50, 103.80], [10.50, 104.20], [9.95, 104.20]
+];
+
+function pointInPolygon(lat, lng, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][0], yi = polygon[i][1];
+    const xj = polygon[j][0], yj = polygon[j][1];
+    const intersect = ((yi > lng) !== (yj > lng))
+        && (lat < (xj - xi) * (lng - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function isPointInVietnam(lat, lng) {
+  return pointInPolygon(lat, lng, VIETNAM_MAINLAND_POLYGON) ||
+         pointInPolygon(lat, lng, PHU_QUOC_POLYGON);
+}
+
+function isRouteInsideVietnam(route) {
+  const coords = route.coords;
+  if (!coords || coords.length === 0) return false;
+  const step = Math.max(1, Math.floor(coords.length / 120));
+  for (let i = 0; i < coords.length; i += step) {
+    if (!isPointInVietnam(coords[i][0], coords[i][1])) {
+      return false;
+    }
+  }
+  if (!isPointInVietnam(coords[coords.length - 1][0], coords[coords.length - 1][1])) {
+    return false;
+  }
+  return true;
+}
+
+async function fetchOsrmRawRoute(waypoints) {
+  const coordStr = waypoints.map(p => `${p.lng},${p.lat}`).join(';');
+  const url = `https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson&steps=true&alternatives=true`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error('Routing API error');
+  if (!res.ok) return [];
   const data = await res.json();
-  if (data.code !== 'Ok' || !data.routes?.length) throw new Error('Không tìm thấy tuyến đường');
-
+  if (data.code !== 'Ok' || !data.routes?.length) return [];
   return data.routes.map((route, index) => ({
-    id: String.fromCharCode(65 + index),
     coords: route.geometry.coordinates.map(([lng, lat]) => [lat, lng]),
     distance: route.distance / 1000,
     duration: route.duration / 60,
@@ -724,6 +929,405 @@ async function findSafeRoutes(start, end) {
     routeIndex: index,
     riskScore: 0,
   }));
+}
+
+async function findSafeRoutes(start, end) {
+  // 1. Thử lấy tuyến trực tiếp start -> end
+  const initialRoutes = await fetchOsrmRawRoute([start, end]);
+  let validRoutes = initialRoutes.filter(r => isRouteInsideVietnam(r));
+
+  // 2. Nếu không có tuyến nào hoàn toàn trong VN (OSRM đi qua Lào/Campuchia)
+  // Thử các waypoint thuộc hành lang giao thông nội địa Việt Nam (QL1A/CT01)
+  if (validRoutes.length === 0) {
+    const minLat = Math.min(start.lat, end.lat);
+    const maxLat = Math.max(start.lat, end.lat);
+    const candidateWps = [
+      { lat: 16.0544, lng: 108.2022 }, // Đà Nẵng
+      { lat: 13.7830, lng: 109.2197 }, // Quy Nhơn
+      { lat: 18.6796, lng: 105.6813 }, // Vinh
+      { lat: 12.2388, lng: 109.1967 }, // Nha Trang
+    ].filter(wp => wp.lat > minLat + 0.3 && wp.lat < maxLat - 0.3);
+
+    for (const wp of candidateWps) {
+      const fallbackRoutes = await fetchOsrmRawRoute([start, wp, end]);
+      const validFallback = fallbackRoutes.filter(r => isRouteInsideVietnam(r));
+      if (validFallback.length > 0) {
+        validRoutes = validFallback;
+        break;
+      }
+    }
+  }
+
+  // 3. Nếu vẫn không có tuyến hợp lệ
+  if (!validRoutes.length) {
+    throw new Error('Không tìm thấy tuyến đường hợp lệ trong lãnh thổ Việt Nam.');
+  }
+
+  // Gán ID (A, B, C...) và routeIndex cho các tuyến hợp lệ
+  return validRoutes.map((route, index) => ({
+    ...route,
+    id: String.fromCharCode(65 + index),
+    routeIndex: index,
+  }));
+}
+
+/* ---------------------------------------------------------------
+   12b. PHƯƠNG ÁN TRUNG CHUYỂN SÂN BAY / GA ĐƯỜNG SẮT (FALLBACK)
+--------------------------------------------------------------- */
+// Danh mục các sân bay và ga đường sắt xác thực thực tế tại Việt Nam
+const OSM_VERIFIED_HUBS = [
+  // Sân bay (aeroway = aerodrome)
+  { name: 'Sân bay Quốc tế Tân Sơn Nhất', lat: 10.8188, lng: 106.6519, type: 'airport' },
+  { name: 'Sân bay Quốc tế Nội Bài', lat: 21.2212, lng: 105.8072, type: 'airport' },
+  { name: 'Sân bay Quốc tế Đà Nẵng', lat: 16.0439, lng: 108.1994, type: 'airport' },
+  { name: 'Sân bay Quốc tế Cam Ranh', lat: 11.9982, lng: 109.2194, type: 'airport' },
+  { name: 'Sân bay Quốc tế Phú Bài (Huế)', lat: 16.4011, lng: 107.7031, type: 'airport' },
+  { name: 'Sân bay Quốc tế Cát Bi (Hải Phòng)', lat: 20.8194, lng: 106.7247, type: 'airport' },
+  { name: 'Sân bay Quốc tế Vinh', lat: 18.7275, lng: 105.6703, type: 'airport' },
+  { name: 'Sân bay Quốc tế Cần Thơ', lat: 10.0851, lng: 105.7119, type: 'airport' },
+  { name: 'Sân bay Liên Khương (Đà Lạt)', lat: 11.7506, lng: 108.3742, type: 'airport' },
+  { name: 'Sân bay Phù Cát (Quy Nhơn)', lat: 13.9553, lng: 109.0422, type: 'airport' },
+  { name: 'Sân bay Pleiku', lat: 14.0044, lng: 108.0169, type: 'airport' },
+  { name: 'Sân bay Buôn Ma Thuột', lat: 12.6683, lng: 108.1203, type: 'airport' },
+  { name: 'Sân bay Đồng Hới', lat: 17.5150, lng: 106.5906, type: 'airport' },
+  { name: 'Sân bay Thọ Xuân (Thanh Hóa)', lat: 19.9011, lng: 105.4678, type: 'airport' },
+  { name: 'Sân bay Tuy Hòa', lat: 13.0494, lng: 109.3339, type: 'airport' },
+  { name: 'Sân bay Chu Lai', lat: 15.4061, lng: 108.7056, type: 'airport' },
+  { name: 'Sân bay Điện Biên Phủ', lat: 21.3975, lng: 103.0078, type: 'airport' },
+  { name: 'Sân bay Quốc tế Vân Đồn', lat: 21.1197, lng: 107.4144, type: 'airport' },
+
+  // Ga đường sắt (railway = station)
+  { name: 'Ga Sài Gòn', lat: 10.7828, lng: 106.6778, type: 'railway' },
+  { name: 'Ga Hà Nội', lat: 21.0245, lng: 105.8412, type: 'railway' },
+  { name: 'Ga Đà Nẵng', lat: 16.0719, lng: 108.2144, type: 'railway' },
+  { name: 'Ga Huế', lat: 16.4589, lng: 107.5794, type: 'railway' },
+  { name: 'Ga Nha Trang', lat: 12.2497, lng: 109.1869, type: 'railway' },
+  { name: 'Ga Vinh', lat: 18.6814, lng: 105.6669, type: 'railway' },
+  { name: 'Ga Đồng Hới', lat: 17.4722, lng: 106.6025, type: 'railway' },
+  { name: 'Ga Diêu Trì (Bình Định)', lat: 13.8058, lng: 109.1417, type: 'railway' },
+  { name: 'Ga Thanh Hóa', lat: 19.8078, lng: 105.7681, type: 'railway' },
+  { name: 'Ga Hải Phòng', lat: 20.8553, lng: 106.6878, type: 'railway' },
+  { name: 'Ga Phan Thiết', lat: 10.9328, lng: 108.0778, type: 'railway' },
+  { name: 'Ga Biên Hòa', lat: 10.9572, lng: 106.8183, type: 'railway' },
+];
+
+async function fetchOsmDynamicHubs(start) {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 1800);
+    const box = `${start.lng - 2.5},${start.lat + 2.5},${start.lng + 2.5},${start.lat - 2.5}`;
+    const url = `https://nominatim.openstreetmap.org/search?format=json&q=aeroway=aerodrome&countrycodes=vn&limit=3&viewbox=${box}&bounded=1`;
+    const res = await fetch(url, { signal: controller.signal, headers: { 'Accept-Language': 'vi' } });
+    clearTimeout(timeoutId);
+    if (!res.ok) return [];
+    const list = await res.json();
+    return list.map(item => ({
+      name: item.name || shortenDisplayName(item.display_name),
+      lat: +item.lat,
+      lng: +item.lon,
+      type: 'airport'
+    })).filter(h => isValidCoordinate(h.lat, h.lng));
+  } catch (e) {
+    return [];
+  }
+}
+
+async function findTransportFallback(start, end) {
+  const totalDirectDist = haversineMeters(start.lat, start.lng, end.lat, end.lng) / 1000;
+
+  let dynamicHubs = [];
+  try {
+    dynamicHubs = await fetchOsmDynamicHubs(start);
+  } catch (e) {}
+
+  const seen = new Set();
+  const allHubs = [];
+  for (const h of [...dynamicHubs, ...OSM_VERIFIED_HUBS]) {
+    const key = `${h.lat.toFixed(3)},${h.lng.toFixed(3)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    allHubs.push(h);
+  }
+
+  // 1. Tìm các ứng viên Origin Hub (gần start)
+  const originCandidates = [];
+  for (const h of allHubs) {
+    const dStart = haversineMeters(start.lat, start.lng, h.lat, h.lng) / 1000;
+    const dEnd = haversineMeters(h.lat, h.lng, end.lat, end.lng) / 1000;
+
+    // Loại bỏ hub đi ngược hướng quá nhiều (dEnd > totalDirectDist + 40km),
+    // trừ khi điểm bắt đầu rất gần hub (dStart <= 30km)
+    if (dEnd > totalDirectDist + 40 && dStart > 30) continue;
+
+    let score = dStart * 1.5 + dEnd * 0.8;
+    if (totalDirectDist > 350 && h.type === 'airport') {
+      score -= 40;
+    }
+    originCandidates.push({ ...h, dStart, dEnd, score });
+  }
+
+  originCandidates.sort((a, b) => a.score - b.score);
+
+  // 2. Thử các ứng viên Origin Hub hàng đầu
+  for (const originHub of originCandidates.slice(0, 6)) {
+    try {
+      const roadToOriginRoutes = await fetchOsrmRawRoute([start, { lat: originHub.lat, lng: originHub.lng }]);
+      const validRoadToOrigin = roadToOriginRoutes.filter(r => isRouteInsideVietnam(r));
+      if (validRoadToOrigin.length === 0) continue;
+
+      const roadToOriginHub = validRoadToOrigin[0];
+
+      // 3. Với Origin Hub này, tìm Destination Hub riêng gần điểm đích (end)
+      // Tính khoảng cách từ từng hub tới end
+      const destCandidates = [];
+      for (const h of allHubs) {
+        // Không được chọn cùng một hub
+        const sameHub = Math.abs(originHub.lat - h.lat) < 0.001 && Math.abs(originHub.lng - h.lng) < 0.001;
+        if (sameHub) continue;
+
+        const dEnd = haversineMeters(h.lat, h.lng, end.lat, end.lng) / 1000;
+        // Ưu tiên cùng loại hình trung chuyển với originHub (máy bay đi với máy bay, tàu hỏa đi với tàu hỏa)
+        const typePenalty = (h.type === originHub.type) ? 0 : 500;
+        destCandidates.push({ ...h, dEnd, sortKey: typePenalty + dEnd });
+      }
+
+      // Sắp xếp tăng dần: ưu tiên cùng loại và gần end nhất
+      destCandidates.sort((a, b) => a.sortKey - b.sortKey);
+
+      // Thử các ứng viên Destination Hub để tìm đường bộ hợp lệ đến end
+      for (const destinationHub of destCandidates.slice(0, 8)) {
+        try {
+          const roadFromDestRoutes = await fetchOsrmRawRoute([
+            { lat: destinationHub.lat, lng: destinationHub.lng },
+            end
+          ]);
+          const validRoadFromDest = roadFromDestRoutes.filter(r => isRouteInsideVietnam(r));
+          if (validRoadFromDest.length === 0) continue;
+
+          const roadFromDestinationHub = validRoadFromDest[0];
+
+          // Cả 2 chặng đường bộ đều hợp lệ trong Việt Nam!
+          roadToOriginHub.riskScore = calculateRouteRisk(roadToOriginHub);
+          roadFromDestinationHub.riskScore = calculateRouteRisk(roadFromDestinationHub);
+
+          const transitDist = haversineMeters(
+            originHub.lat,
+            originHub.lng,
+            destinationHub.lat,
+            destinationHub.lng
+          ) / 1000;
+
+          const transitType = (originHub.type === 'airport' && destinationHub.type === 'airport') ? 'airport' :
+                              (originHub.type === 'railway' && destinationHub.type === 'railway') ? 'railway' :
+                              (originHub.type === 'airport' || destinationHub.type === 'airport') ? 'airport' : 'railway';
+
+          let estDuration = 0;
+          if (transitType === 'airport') {
+            estDuration = Math.round(45 + (transitDist / 600) * 60);
+          } else {
+            estDuration = Math.round((transitDist / 60) * 60);
+          }
+
+          return {
+            originHub,
+            destinationHub,
+            roadToOriginHub,
+            transit: {
+              from: originHub,
+              to: destinationHub,
+              distance: transitDist,
+              estimatedDuration: estDuration,
+              type: transitType
+            },
+            roadFromDestinationHub
+          };
+        } catch (destRouteErr) {
+          // Thử destination hub tiếp theo
+        }
+      }
+    } catch (originRouteErr) {
+      // Thử origin hub tiếp theo
+    }
+  }
+
+  return null;
+}
+
+function renderTransportFallback(fallback) {
+  routeLayerGroup.clearLayers();
+  transportFallbackLayerGroup.clearLayers();
+
+  const transitTypeLabel = fallback.transit.type === 'airport' ? 'Hàng không' : 'Đường sắt';
+  const transitColor = fallback.transit.type === 'airport' ? '#0ea5e9' : '#f08a1c';
+
+  // 1. Chặng 1: Đường bộ từ start -> originHub (Đường liền nét đậm)
+  const roadToOriginLine = L.polyline(fallback.roadToOriginHub.coords, {
+    color: '#2f7ee0',
+    weight: 6,
+    opacity: 0.95,
+    dashArray: null
+  }).addTo(transportFallbackLayerGroup);
+  roadToOriginLine.bindTooltip(
+    `Chặng 1 (Đường bộ đến ${fallback.originHub.name}): ${fallback.roadToOriginHub.distance.toFixed(1)} km · ${Math.round(fallback.roadToOriginHub.duration)} phút`,
+    { sticky: true }
+  );
+
+  // 2. Chặng 2: Trung chuyển giữa originHub -> destinationHub (Đường nét chấm)
+  const transitCoords = [
+    [fallback.originHub.lat, fallback.originHub.lng],
+    [fallback.destinationHub.lat, fallback.destinationHub.lng]
+  ];
+  const transitLine = L.polyline(transitCoords, {
+    color: transitColor,
+    weight: 4,
+    opacity: 0.85,
+    dashArray: '2 8'
+  }).addTo(transportFallbackLayerGroup);
+  transitLine.bindTooltip(
+    `Chặng 2 (${transitTypeLabel} dự kiến: ${fallback.originHub.name} → ${fallback.destinationHub.name}): ~${fallback.transit.distance.toFixed(0)} km`,
+    { sticky: true }
+  );
+
+  // 3. Chặng 3: Đường bộ từ destinationHub -> end (Đường liền nét đậm)
+  const roadFromDestLine = L.polyline(fallback.roadFromDestinationHub.coords, {
+    color: '#2f7ee0',
+    weight: 6,
+    opacity: 0.95,
+    dashArray: null
+  }).addTo(transportFallbackLayerGroup);
+  roadFromDestLine.bindTooltip(
+    `Chặng 3 (Đường bộ từ ${fallback.destinationHub.name} đến đích): ${fallback.roadFromDestinationHub.distance.toFixed(1)} km · ${Math.round(fallback.roadFromDestinationHub.duration)} phút`,
+    { sticky: true }
+  );
+
+  // 4. Markers & Floating Notes cho cả 2 Hub
+  function addHubMarker(hub, subLabel, isOrigin) {
+    const isAirport = hub.type === 'airport';
+    const iconClass = isAirport ? 'fa-plane' : 'fa-train';
+    const typeText = isAirport ? 'Sân bay' : 'Ga đường sắt';
+
+    const comboHtml = `
+      <div class="transport-hub-combo">
+        <div class="transport-hub-note">
+          <div class="th-title"><i class="fa-solid ${iconClass}"></i> ${escapeHtml(hub.name)}</div>
+          <div class="th-sub">${escapeHtml(subLabel)}</div>
+        </div>
+        <div class="transport-hub-marker ${isAirport ? '' : 'railway'}">
+          <i class="fa-solid ${iconClass}"></i>
+        </div>
+      </div>
+    `;
+    const hubIcon = L.divIcon({
+      className: '',
+      html: comboHtml,
+      iconSize: [240, 86],
+      iconAnchor: [120, 86]
+    });
+
+    const marker = L.marker([hub.lat, hub.lng], {
+      icon: hubIcon,
+      zIndexOffset: 1500
+    }).addTo(transportFallbackLayerGroup);
+
+    let popupContent = '';
+    if (isOrigin) {
+      popupContent = `
+        <div class="popup-box">
+          <div class="p-head"><i class="fa-solid ${iconClass}" style="color:${isAirport ? '#0ea5e9' : '#f08a1c'}"></i> <b>${escapeHtml(hub.name)}</b></div>
+          <div class="p-row">Loại hình: <b>${typeText}</b></div>
+          <div class="p-row">Chặng 1: <b>Đường bộ từ điểm bắt đầu (${fallback.roadToOriginHub.distance.toFixed(1)} km)</b></div>
+          <div class="p-row">Chặng 2: <b>Trung chuyển dự kiến đến ${escapeHtml(fallback.destinationHub.name)} (~${fallback.transit.distance.toFixed(0)} km)</b></div>
+        </div>
+      `;
+    } else {
+      popupContent = `
+        <div class="popup-box">
+          <div class="p-head"><i class="fa-solid ${iconClass}" style="color:${isAirport ? '#0ea5e9' : '#f08a1c'}"></i> <b>${escapeHtml(hub.name)}</b></div>
+          <div class="p-row">Loại hình: <b>${typeText}</b></div>
+          <div class="p-row">Chặng 2: <b>Trung chuyển dự kiến từ ${escapeHtml(fallback.originHub.name)} (~${fallback.transit.distance.toFixed(0)} km)</b></div>
+          <div class="p-row">Chặng 3: <b>Đường bộ đến điểm đích (${fallback.roadFromDestinationHub.distance.toFixed(1)} km)</b></div>
+        </div>
+      `;
+    }
+    marker.bindPopup(popupContent);
+  }
+
+  addHubMarker(fallback.originHub, 'Điểm trung chuyển', true);
+  addHubMarker(fallback.destinationHub, 'Điểm trung chuyển gần đích', false);
+
+  // 5. Fit bounds bao phủ toàn bộ 4 điểm: start, originHub, destinationHub, end
+  const allCoords = [
+    ...fallback.roadToOriginHub.coords,
+    [fallback.originHub.lat, fallback.originHub.lng],
+    [fallback.destinationHub.lat, fallback.destinationHub.lng],
+    ...fallback.roadFromDestinationHub.coords
+  ];
+  map.fitBounds(allCoords, { padding: [60, 60] });
+
+  // 6. Hiển thị trên sidebar đúng 3 chặng
+  const resultsEl = document.getElementById('route-results');
+  resultsEl.classList.add('show');
+
+  const rc1 = fallback.roadToOriginHub.riskScore >= 66 ? 'var(--risk-high)' : fallback.roadToOriginHub.riskScore >= 34 ? 'var(--risk-mid)' : 'var(--risk-low)';
+  const rc3 = fallback.roadFromDestinationHub.riskScore >= 66 ? 'var(--risk-high)' : fallback.roadFromDestinationHub.riskScore >= 34 ? 'var(--risk-mid)' : 'var(--risk-low)';
+
+  resultsEl.innerHTML = `
+    <div class="transport-fallback-card">
+      <div class="tf-badge">
+        <i class="fa-solid fa-route"></i> PHƯƠNG ÁN KẾT HỢP TRUNG CHUYỂN (3 CHẶNG)
+      </div>
+      <p class="tf-notice">
+        Không tìm thấy tuyến đường bộ liên tục 100% trong lãnh thổ Việt Nam. Hệ thống đề xuất phương án kết hợp trung chuyển giữa <b>${escapeHtml(fallback.originHub.name)}</b> và <b>${escapeHtml(fallback.destinationHub.name)}</b>.
+      </p>
+      
+      <!-- Chặng 1: Đường bộ -->
+      <div class="tf-leg-card">
+        <div class="tf-leg-head">
+          <span class="tf-leg-tag">Chặng 1: Đường bộ</span>
+          <span class="tf-leg-dest">Đến ${escapeHtml(fallback.originHub.name)}</span>
+        </div>
+        <div class="route-stats">
+          <div class="stat"><b>${fallback.roadToOriginHub.distance.toFixed(1)} km</b><span>Quãng đường</span></div>
+          <div class="stat"><b>${Math.round(fallback.roadToOriginHub.duration)} phút</b><span>Thời gian</span></div>
+        </div>
+        <div class="risk-row">
+          <div class="risk-bar-track"><div class="risk-bar-fill" style="width:${fallback.roadToOriginHub.riskScore}%;background:${rc1}"></div></div>
+          <span class="risk-value" style="color:${rc1}">Mức rủi ro: ${fallback.roadToOriginHub.riskScore}/100</span>
+        </div>
+      </div>
+
+      <!-- Chặng 2: Trung chuyển dự kiến -->
+      <div class="tf-leg-card transit">
+        <div class="tf-leg-head">
+          <span class="tf-leg-tag ${fallback.transit.type === 'airport' ? 'plane' : 'train'}">Chặng 2: Trung chuyển ${transitTypeLabel.toLowerCase()} dự kiến</span>
+          <span class="tf-leg-dest">${escapeHtml(fallback.originHub.name)} → ${escapeHtml(fallback.destinationHub.name)}</span>
+        </div>
+        <div class="route-stats">
+          <div class="stat"><b>~${fallback.transit.distance.toFixed(0)} km</b><span>Khoảng cách</span></div>
+          <div class="stat"><b>~${fallback.transit.estimatedDuration} phút</b><span>Dự kiến</span></div>
+        </div>
+        <div class="tf-transit-note">
+          <i class="fa-solid fa-circle-info"></i> Chặng trung chuyển là phương án dự kiến. Hệ thống chưa kiểm tra lịch bay/lịch tàu thực tế.
+        </div>
+      </div>
+
+      <!-- Chặng 3: Đường bộ -->
+      <div class="tf-leg-card">
+        <div class="tf-leg-head">
+          <span class="tf-leg-tag">Chặng 3: Đường bộ</span>
+          <span class="tf-leg-dest">Đến ${escapeHtml(endLocation ? endLocation.label : 'Điểm đích')}</span>
+        </div>
+        <div class="route-stats">
+          <div class="stat"><b>${fallback.roadFromDestinationHub.distance.toFixed(1)} km</b><span>Quãng đường</span></div>
+          <div class="stat"><b>${Math.round(fallback.roadFromDestinationHub.duration)} phút</b><span>Thời gian</span></div>
+        </div>
+        <div class="risk-row">
+          <div class="risk-bar-track"><div class="risk-bar-fill" style="width:${fallback.roadFromDestinationHub.riskScore}%;background:${rc3}"></div></div>
+          <span class="risk-value" style="color:${rc3}">Mức rủi ro: ${fallback.roadFromDestinationHub.riskScore}/100</span>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 /* ---------------------------------------------------------------
@@ -903,15 +1507,28 @@ function renderRoutes(routes, mode) {
   const sorted = sortRoutesByMode(routes, mode);
   const bounds = [];
 
+  // Giữ tuyến đang chọn nếu còn trong danh sách, ngược lại chọn tuyến đề xuất (đầu tiên)
+  if (!selectedRouteId || !sorted.some(r => r.id === selectedRouteId)) {
+    selectedRouteId = sorted[0]?.id ?? null;
+  }
+
   sorted.forEach((route, idx) => {
-    const isBest = idx === 0;
+    const isSelected = route.id === selectedRouteId;
+    const isRecommended = idx === 0;
     const color = ROUTE_COLORS[route.routeIndex] ?? ROUTE_COLORS[0];
     const line = L.polyline(route.coords, {
-      color, weight: isBest ? 6 : 4, opacity: isBest ? 0.95 : 0.55,
-      dashArray: isBest ? null : '2 8'
+      color,
+      weight: isSelected ? 6 : 4,
+      opacity: isSelected ? 0.95 : 0.55,
+      dashArray: isSelected ? null : '2 8'
     }).addTo(routeLayerGroup);
+
+    if (isSelected) {
+      line.bringToFront();
+    }
+
     line.bindTooltip(
-      `Tuyến ${route.id} · ${route.distance.toFixed(1)} km · ${Math.round(route.duration)} phút`,
+      `Tuyến ${route.id} · ${route.distance.toFixed(1)} km · ${Math.round(route.duration)} phút${isSelected ? ' (Đang chọn)' : ''}`,
       { sticky: true }
     );
     route.coords.forEach(c => bounds.push(c));
@@ -925,13 +1542,14 @@ function renderRoutes(routes, mode) {
   resultsEl.innerHTML = `<p class="panel-title" style="margin-top:4px;">KẾT QUẢ TUYẾN ĐƯỜNG</p>
     <p class="routes-summary">Tìm thấy ${sorted.length} tuyến đường</p>` +
     sorted.map((route, idx) => {
-      const isBest = idx === 0;
+      const isSelected = route.id === selectedRouteId;
+      const isRecommended = idx === 0;
       const rc = route.riskScore >= 66 ? 'var(--risk-high)' : route.riskScore >= 34 ? 'var(--risk-mid)' : 'var(--risk-low)';
       const color = ROUTE_COLORS[route.routeIndex] ?? ROUTE_COLORS[0];
-      return `<div class="route-card ${isBest ? 'best' : ''}">
+      return `<div class="route-card ${isSelected ? 'best selected' : ''}">
         <div class="route-card-head">
           <span class="title" style="color:${color}">● Tuyến ${route.id}</span>
-          ${isBest ? `<span class="badge">Đề xuất (${modeName})</span>` : ''}
+          ${isRecommended ? `<span class="badge">Đề xuất (${modeName})</span>` : ''}
         </div>
         <div class="route-stats">
           <div class="stat"><b>${route.distance.toFixed(1)} km</b><span>Quãng đường</span></div>
@@ -942,12 +1560,21 @@ function renderRoutes(routes, mode) {
           <span class="risk-value" style="color:${rc}">${route.riskScore}/100</span>
         </div>
         ${buildStepsHtml(route.legs)}
-        <button class="choose-btn" onclick="chooseRoute('${route.id}')">Chọn tuyến này</button>
+        ${isSelected
+          ? `<button class="choose-btn selected" style="background:var(--primary);color:#fff;cursor:default;">✓ Đang chọn</button>`
+          : `<button class="choose-btn" onclick="chooseRoute('${route.id}')">Chọn tuyến này</button>`
+        }
       </div>`;
     }).join('');
 }
 
-function chooseRoute(id) { showToast(`Đã chọn Tuyến ${id}. Bắt đầu chỉ đường...`); }
+function chooseRoute(id) {
+  const target = currentRoutes.find(r => r.id === id);
+  if (!target) return;
+  selectedRouteId = id;
+  renderRoutes(currentRoutes, selectedMode);
+  showToast(`Đã chọn Tuyến ${id}. Bắt đầu chỉ đường...`);
+}
 
 /* ---------------------------------------------------------------
    19. NÚT "TÌM ĐƯỜNG AN TOÀN"
@@ -960,6 +1587,10 @@ async function onFindRouteClick() {
     showToast('Vui lòng chọn điểm bắt đầu hợp lệ.'); return;
   }
   if (!endText) { showToast('Vui lòng nhập điểm đến.'); return; }
+
+  // Reset kết quả và các layer fallback trước đó
+  transportFallbackLayerGroup?.clearLayers();
+  transportFallback = null;
 
   isFindingRoute = true;
   setFindButtonLoading(true, 'Đang tìm tuyến đường...');
@@ -989,14 +1620,37 @@ async function onFindRouteClick() {
     const routes = await findSafeRoutes(startLocation, endLocation);
     routes.forEach(r => { r.riskScore = calculateRouteRisk(r); });
     currentRoutes = routes;
+
+    // Mặc định chọn tuyến đề xuất ban đầu (phần tử đầu tiên sau khi sắp xếp)
+    const sorted = sortRoutesByMode(routes, selectedMode);
+    selectedRouteId = sorted[0]?.id ?? null;
+
     renderRoutes(routes, selectedMode);
 
     if (window.innerWidth <= 820) document.getElementById('sidebar').classList.add('expanded');
 
   } catch (err) {
     console.error('SafeRoute error:', err);
-    if (err.message === 'Không tìm thấy tuyến đường') showToast('Không tìm thấy tuyến đường giữa hai địa điểm.');
-    else showToast('Không thể tìm tuyến đường. Vui lòng thử lại.');
+    if (err.message === 'Không tìm thấy tuyến đường hợp lệ trong lãnh thổ Việt Nam.' || err.message === 'Không tìm thấy tuyến đường') {
+      try {
+        setFindButtonLoading(true, 'Đang tìm phương án trung chuyển...');
+        const fallbackResult = await findTransportFallback(startLocation, endLocation);
+        if (fallbackResult) {
+          transportFallback = fallbackResult;
+          currentRoutes = [];
+          selectedRouteId = null;
+          renderTransportFallback(fallbackResult);
+          showToast('Đang đề xuất phương án kết hợp trung chuyển.');
+          if (window.innerWidth <= 820) document.getElementById('sidebar').classList.add('expanded');
+          return;
+        }
+      } catch (fbErr) {
+        console.error('Lỗi tìm phương án trung chuyển:', fbErr);
+      }
+      showToast('Không tìm thấy tuyến đường hợp lệ trong lãnh thổ Việt Nam.');
+    } else {
+      showToast('Không thể tìm tuyến đường. Vui lòng thử lại.');
+    }
   } finally {
     isFindingRoute = false;
     setFindButtonLoading(false, 'Tìm đường an toàn');
@@ -1013,6 +1667,14 @@ function setFindButtonLoading(isLoading, label) {
    20. SWAP START / END
 --------------------------------------------------------------- */
 function swapLocations() {
+  transportFallbackLayerGroup?.clearLayers();
+  transportFallback = null;
+  routeLayerGroup?.clearLayers();
+  currentRoutes = [];
+  selectedRouteId = null;
+  const resultsEl = document.getElementById('route-results');
+  if (resultsEl) resultsEl.classList.remove('show');
+
   const si = document.getElementById('start-input');
   const ei = document.getElementById('end-input');
   const tmpText = si.value; si.value = ei.value; ei.value = tmpText;
@@ -1037,6 +1699,7 @@ document.getElementById('mode-group').addEventListener('change', e => {
   document.querySelectorAll('.mode-option').forEach(opt => {
     opt.classList.toggle('checked', opt.dataset.mode === selectedMode);
   });
+  if (transportFallback) return;
   if (currentRoutes.length > 0) renderRoutes(currentRoutes, selectedMode);
 });
 
