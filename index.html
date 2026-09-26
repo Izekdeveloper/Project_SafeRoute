@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
+<title>SafeRoute – Đi an toàn hơn mỗi ngày</title>
+
+<!-- ============================================================
+     THƯ VIỆN NGOÀI (CDN) — Leaflet (bản đồ) + Font Awesome (icon)
+     Không dùng Google Maps vì cần API key, dùng OpenStreetMap miễn phí.
+     ============================================================ -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ============================================================
+       HEADER
+       ============================================================ -->
+  <header id="header">
+    <div class="brand">
+      <div class="brand-mark"><i class="fa-solid fa-shield-halved"></i></div>
+      <div class="brand-text">
+        <div class="name">Safe<span>Route</span></div>
+        <div class="tagline">Đi an toàn hơn mỗi ngày</div>
+      </div>
+    </div>
+    <button class="account-btn">
+      <span class="avatar"><i class="fa-solid fa-user"></i></span>
+      <span class="account-label">Đăng nhập</span>
+    </button>
+  </header>
+
+  <div id="main-content">
+
+    <!-- ============================================================
+         SIDEBAR — form tìm đường + kết quả tuyến đường
+         ============================================================ -->
+    <aside id="sidebar">
+      <div class="sheet-handle" onclick="toggleSheet()"><span></span></div>
+
+      <p class="panel-title">TÌM ĐƯỜNG</p>
+      <div class="search-card">
+        <div class="location-row">
+          <div class="location-field start">
+            <i class="fa-solid fa-location-dot"></i>
+            <input id="start-input" type="text" placeholder="Điểm bắt đầu" value="Chợ Bến Thành" />
+          </div>
+          <div class="location-field end">
+            <i class="fa-solid fa-flag-checkered"></i>
+            <input id="end-input" type="text" placeholder="Điểm đến" value="Landmark 81" />
+          </div>
+          <button class="swap-btn" onclick="swapLocations()" title="Đảo chiều">
+            <i class="fa-solid fa-arrow-up-arrow-down"></i>
+          </button>
+        </div>
+
+        <!-- Chế độ tìm đường: quyết định hệ số alpha trong công thức weight -->
+        <div class="mode-group" id="mode-group">
+          <label class="mode-option" data-mode="fastest">
+            <input type="radio" name="mode" value="fastest" />
+            <span class="mode-label">Nhanh nhất</span>
+            <span class="mode-sub">α = 0</span>
+          </label>
+          <label class="mode-option checked" data-mode="balanced">
+            <input type="radio" name="mode" value="balanced" checked />
+            <span class="mode-label">Cân bằng</span>
+            <span class="mode-sub">α = 1</span>
+          </label>
+          <label class="mode-option" data-mode="safest">
+            <input type="radio" name="mode" value="safest" />
+            <span class="mode-label">An toàn nhất</span>
+            <span class="mode-sub">α = 3</span>
+          </label>
+        </div>
+
+        <button class="find-btn" onclick="onFindRouteClick()">
+          <i class="fa-solid fa-route"></i> Tìm đường an toàn
+        </button>
+      </div>
+
+      <!-- Kết quả 3 tuyến đường demo, được renderRoutes() điền vào -->
+      <div id="route-results"></div>
+    </aside>
+
+    <!-- ============================================================
+         BẢN ĐỒ (Leaflet + OpenStreetMap)
+         ============================================================ -->
+    <div id="map-container">
+      <div id="map"></div>
+
+      <!-- Chú thích mức độ rủi ro -->
+      <div id="legend">
+        <div class="legend-title">Mức độ rủi ro</div>
+        <div class="legend-item"><span class="dot" style="background:var(--risk-low)"></span>Rủi ro thấp</div>
+        <div class="legend-item"><span class="dot" style="background:var(--risk-mid)"></span>Rủi ro trung bình</div>
+        <div class="legend-item"><span class="dot" style="background:var(--risk-high)"></span>Rủi ro cao</div>
+      </div>
+
+      <!-- Cảnh báo gần bạn -->
+      <div id="nearby-panel">
+        <div class="np-title"><i class="fa-solid fa-triangle-exclamation"></i>Cảnh báo gần bạn</div>
+        <div id="nearby-list"></div>
+      </div>
+
+      <!-- Nút nổi báo cáo sự cố -->
+      <button id="report-fab" onclick="openReportModal()">
+        <i class="fa-solid fa-circle-plus"></i> Báo cáo sự cố
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     MODAL BÁO CÁO SỰ CỐ
+     ============================================================ -->
+<div class="modal-overlay hidden" id="report-modal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3>Báo cáo sự cố</h3>
+      <button class="modal-close" onclick="closeReportModal()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+
+    <div class="hint-box">
+      <i class="fa-solid fa-circle-info"></i>
+      Chạm vào bản đồ để chọn đúng vị trí sự cố (demo dùng tâm bản đồ nếu không chọn).
+    </div>
+
+    <div class="field-group">
+      <label>Loại sự cố</label>
+      <select id="report-type">
+        <option value="flood">🔵 Ngập nước</option>
+        <option value="accident">🔴 Tai nạn giao thông</option>
+        <option value="construction">🟠 Công trình đang thi công</option>
+        <option value="traffic">🟡 Ùn tắc</option>
+        <option value="damaged_road">🟤 Đường hư hỏng</option>
+        <option value="danger">⚠️ Khu vực nguy hiểm</option>
+        <option value="obstacle">🟣 Chướng ngại vật</option>
+      </select>
+    </div>
+
+    <div class="field-group">
+      <label>Mức độ</label>
+      <div class="level-group" id="level-group">
+        <label class="level-pill low checked"><input type="radio" name="level" value="thap" checked />Thấp</label>
+        <label class="level-pill mid"><input type="radio" name="level" value="trungbinh" />Trung bình</label>
+        <label class="level-pill high"><input type="radio" name="level" value="cao" />Cao</label>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <label>Mô tả</label>
+      <textarea id="report-desc" placeholder="Mô tả chi tiết sự cố..."></textarea>
+    </div>
+
+    <div class="field-group">
+      <label>Vị trí</label>
+      <input type="text" id="report-location" placeholder="Chạm vào bản đồ để chọn vị trí" readonly />
+    </div>
+
+    <button class="submit-btn" onclick="submitReport()">Gửi báo cáo</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"><i class="fa-solid fa-circle-check"></i><span id="toast-text"></span></div>
+
+<!-- ============================================================
+     THƯ VIỆN LEAFLET
+     ============================================================ -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+/* ================================================================
+   SAFEROUTE — LOGIC DEMO (FRONTEND ONLY)
+   ----------------------------------------------------------------
+   GHI CHÚ THUẬT TOÁN (cho sinh viên đọc/chỉnh sửa):
+
+   Bản đồ đường đi được mô hình hoá như một ĐỒ THỊ (Graph):
+     - Node  = giao lộ (điểm giao nhau giữa các con đường)
+     - Edge  = đoạn đường nối giữa 2 giao lộ
+
+   Mỗi Edge có 2 thuộc tính:
+     - distance  : độ dài đoạn đường (km)
+     - riskScore : mức rủi ro của đoạn đường, chuẩn hoá về [0,1]
+
+   Trọng số (weight) của mỗi Edge dùng để tìm đường được tính theo công thức:
+
+        weight = distance * (1 + alpha * riskScore)
+
+   Trong đó:
+     - alpha càng lớn thì thuật toán càng "ngại" đi vào đoạn đường rủi ro cao
+     - alpha = 0  → chế độ "Nhanh nhất"   (bỏ qua rủi ro)
+     - alpha = 1  → chế độ "Cân bằng"
+     - alpha = 3  → chế độ "An toàn nhất" (ưu tiên né rủi ro rất mạnh)
+
+   Ở phiên bản PROTOTYPE này, chúng ta CHƯA dựng đồ thị thật với hàng trăm
+   giao lộ + chưa chạy Dijkstra/A*. Thay vào đó, findSafeRoute() trả về
+   3 tuyến đường mẫu (hard-code toạ độ) tương ứng với 3 alpha ở trên, để
+   demo giao diện & luồng tương tác. Khi có dữ liệu OSM thật (danh sách
+   node/edge của thành phố), ta chỉ cần thay phần bên trong findSafeRoute()
+   bằng thuật toán Dijkstra/A* chạy trên weight ở công thức trên — toàn bộ
+   phần giao diện, renderRoutes(), renderIncidents() có thể giữ nguyên.
+================================================================ */
+
+/* ---------------------------------------------------------------
+   1. DỮ LIỆU CẤU HÌNH LOẠI SỰ CỐ
+--------------------------------------------------------------- */
+const INCIDENT_TYPES = {
+  accident:      { label: 'Tai nạn giao thông',        emoji: '🔴', color: '#e3492c' },
+  flood:         { label: 'Ngập nước',                 emoji: '🔵', color: '#2f7ee0' },
+  construction:  { label: 'Công trình đang thi công',  emoji: '🟠', color: '#f08a1c' },
+  traffic:       { label: 'Ùn tắc',                    emoji: '🟡', color: '#f4b400' },
+  danger:        { label: 'Khu vực nguy hiểm',         emoji: '⚠️', color: '#8a4fe0' },
+  damaged_road:  { label: 'Đường hư hỏng',             emoji: '🟤', color: '#8d6e63' },
+  obstacle:      { label: 'Chướng ngại vật',           emoji: '🟣', color: '#7c4dff' }
+};
+
+const LEVEL_LABEL = { thap: 'Thấp', trungbinh: 'Trung bình', cao: 'Cao' };
+
+/* ---------------------------------------------------------------
+   2. DỮ LIỆU DEMO — SỰ CỐ CỘNG ĐỒNG BÁO CÁO (khu vực TP.HCM)
+   Mỗi incident tương lai sẽ là input để tính riskScore cho các
+   đoạn đường (edge) gần nó — xem công thức renderRoutes() bên dưới.
+--------------------------------------------------------------- */
+let incidents = [
+  { id: 1, type: 'flood',        level: 'cao',       lat: 10.7769, lng: 106.6982, time: '15 phút trước', confirms: 24, desc: 'Nước ngập khoảng 30cm, xe máy khó di chuyển.' },
+  { id: 2, type: 'accident',     level: 'cao',       lat: 10.7891, lng: 106.7020, time: '32 phút trước', confirms: 18, desc: 'Va chạm giữa 2 xe máy, đang chờ xử lý.' },
+  { id: 3, type: 'construction', level: 'trungbinh', lat: 10.7820, lng: 106.6955, time: '2 giờ trước',   confirms: 9,  desc: 'Rào chắn thi công chiếm 1 làn đường.' },
+  { id: 4, type: 'traffic',      level: 'trungbinh', lat: 10.7735, lng: 106.7050, time: '5 phút trước',  confirms: 31, desc: 'Ùn tắc kéo dài do giờ cao điểm.' },
+  { id: 5, type: 'danger',       level: 'cao',       lat: 10.8010, lng: 106.7110, time: '1 ngày trước',  confirms: 14, desc: 'Khu vực thường xuyên xảy ra cướp giật ban đêm.' },
+  { id: 6, type: 'damaged_road', level: 'thap',      lat: 10.7690, lng: 106.6900, time: '3 giờ trước',   confirms: 7,  desc: 'Mặt đường có nhiều ổ gà.' },
+  { id: 7, type: 'flood',        level: 'trungbinh', lat: 10.7940, lng: 106.6870, time: '40 phút trước', confirms: 11, desc: 'Ngập cục bộ tại điểm trũng.' },
+  { id: 8, type: 'obstacle',     level: 'thap',      lat: 10.7660, lng: 106.7080, time: '20 phút trước', confirms: 5,  desc: 'Cây đổ chắn một phần lòng đường.' }
+];
+
+/* ---------------------------------------------------------------
+   3. DỮ LIỆU DEMO — 3 TUYẾN ĐƯỜNG ỨNG VỚI 3 CHẾ ĐỘ
+   Toạ độ chỉ mang tính minh hoạ, không phải dữ liệu định tuyến thật.
+--------------------------------------------------------------- */
+const ROUTES_DATA = {
+  fastest: {
+    id: 'A', name: 'NHANH NHẤT', mode: 'fastest', alpha: 0,
+    distance: 5.2, duration: 14, riskScore: 72, color: '#e3492c',
+    coords: [[10.7725,106.6980],[10.7758,106.6995],[10.7793,106.7010],[10.7822,106.7035],[10.7845,106.7060],[10.7871,106.7090]],
+    highlights: ['Thời gian di chuyển ngắn nhất', 'Đi xuyên qua khu vực đang ngập nhẹ', 'Có đoạn qua điểm ùn tắc giờ cao điểm']
+  },
+  balanced: {
+    id: 'B', name: 'CÂN BẰNG', mode: 'balanced', alpha: 1,
+    distance: 5.8, duration: 16, riskScore: 35, color: '#f4b400',
+    coords: [[10.7725,106.6980],[10.7750,106.7010],[10.7780,106.7040],[10.7810,106.7055],[10.7840,106.7075],[10.7871,106.7090]],
+    highlights: ['Cân bằng giữa thời gian và độ an toàn', 'Tránh điểm ngập nặng nhất', 'Vẫn đi gần khu vực có báo cáo ùn tắc']
+  },
+  safest: {
+    id: 'C', name: 'AN TOÀN NHẤT', mode: 'safest', alpha: 3,
+    distance: 6.4, duration: 19, riskScore: 12, color: '#12b76a',
+    coords: [[10.7725,106.6980],[10.7715,106.7030],[10.7735,106.7075],[10.7775,106.7100],[10.7820,106.7110],[10.7871,106.7090]],
+    highlights: ['Ít điểm ngập', 'Không có tai nạn nghiêm trọng', 'Tránh khu vực đang thi công']
+  }
+};
+
+/* ---------------------------------------------------------------
+   4. TRẠNG THÁI CHUNG (state)
+--------------------------------------------------------------- */
+let map;
+let incidentLayerGroup;
+let routeLayerGroup;
+let selectedMode = 'balanced';
+let pendingReportLatLng = null; // vị trí người dùng chọn khi báo cáo
+
+/* ---------------------------------------------------------------
+   5. KHỞI TẠO BẢN ĐỒ (mặc định trung tâm TP.HCM)
+--------------------------------------------------------------- */
+function initMap() {
+  map = L.map('map', { zoomControl: false }).setView([10.7769, 106.7009], 14);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors',
+    maxZoom: 19
+  }).addTo(map);
+
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+  incidentLayerGroup = L.layerGroup().addTo(map);
+  routeLayerGroup = L.layerGroup().addTo(map);
+
+  // Khi modal báo cáo đang mở, cho phép chạm bản đồ để chọn vị trí sự cố
+  map.on('click', function (e) {
+    const modal = document.getElementById('report-modal');
+    if (!modal.classList.contains('hidden')) {
+      pendingReportLatLng = e.latlng;
+      document.getElementById('report-location').value =
+        e.latlng.lat.toFixed(5) + ', ' + e.latlng.lng.toFixed(5);
+    }
+  });
+
+  renderIncidents();
+  renderNearbyPanel();
+}
+
+/* ---------------------------------------------------------------
+   6. HÀM TÍNH RISK SCORE (mô phỏng)
+   Công thức chuẩn hoá đề xuất trong đồ án:
+
+     riskScore = floodRisk + accidentRisk + constructionRisk
+                 + trafficRisk + communityReports   (rồi chuẩn hoá về 0→1)
+
+   Ở bản demo, mỗi tuyến đã có riskScore mẫu dựng sẵn (ROUTES_DATA),
+   hàm này minh hoạ cách một hệ thống thật sẽ tổng hợp điểm rủi ro
+   từ các sự cố cộng đồng nằm gần tuyến đường.
+--------------------------------------------------------------- */
+function calculateRiskScore(route) {
+  // ---- Phiên bản DEMO: dùng điểm số đã gán sẵn cho tuyến ----
+  if (route && typeof route.riskScore === 'number') return route.riskScore;
+
+  // ---- Gợi ý công thức thật (chưa dùng trong demo) ----
+  // const floodRisk        = countNearbyIncidents(route, 'flood')        * 0.25;
+  // const accidentRisk     = countNearbyIncidents(route, 'accident')     * 0.30;
+  // const constructionRisk = countNearbyIncidents(route, 'construction') * 0.15;
+  // const trafficRisk      = countNearbyIncidents(route, 'traffic')      * 0.15;
+  // const communityReports = countNearbyIncidents(route, 'danger')       * 0.15;
+  // const raw = floodRisk + accidentRisk + constructionRisk + trafficRisk + communityReports;
+  // return Math.min(100, Math.round(raw * 100)); // chuẩn hoá 0-100
+  return 50;
+}
+
+/* ---------------------------------------------------------------
+   7. HÀM TÌM ĐƯỜNG AN TOÀN (mô phỏng Dijkstra/A*)
+   alpha (mức ưu tiên an toàn) được quyết định bởi mode đã chọn:
+      fastest  -> alpha = 0
+      balanced -> alpha = 1
+      safest   -> alpha = 3
+   weight = distance * (1 + alpha * riskScoreNormalized)
+--------------------------------------------------------------- */
+function findSafeRoute(start, end, mode) {
+  // ---- DEMO: trả thẳng dữ liệu mẫu ứng với 3 chế độ ----
+  // Thuật toán thật sẽ: dựng graph từ OSM -> chạy Dijkstra/A* với
+  // hàm trọng số weight(edge) = edge.distance * (1 + alpha * edge.riskScore)
+  // rồi trả về đường đi có tổng weight nhỏ nhất.
+  console.log('findSafeRoute(demo):', start, '->', end, '| mode =', mode);
+  return Object.values(ROUTES_DATA);
+}
+
+/* ---------------------------------------------------------------
+   8. RENDER SỰ CỐ TRÊN BẢN ĐỒ
+--------------------------------------------------------------- */
+function renderIncidents() {
+  incidentLayerGroup.clearLayers();
+
+  incidents.forEach(inc => {
+    const meta = INCIDENT_TYPES[inc.type];
+    const icon = L.divIcon({
+      className: '',
+      html: `<div class="incident-marker" style="border-color:${meta.color}"><span>${meta.emoji}</span></div>`,
+      iconSize: [30, 30],
+      iconAnchor: [15, 28]
+    });
+
+    const marker = L.marker([inc.lat, inc.lng], { icon }).addTo(incidentLayerGroup);
+
+    const levelColor = inc.level === 'cao' ? 'var(--risk-high)' : inc.level === 'trungbinh' ? 'var(--risk-mid)' : 'var(--risk-low)';
+    marker.bindPopup(`
+      <div class="popup-box">
+        <div class="p-head">${meta.emoji} ${meta.label}</div>
+        <div class="p-row"><span>Mô tả</span><b>${inc.desc}</b></div>
+        <div class="p-row"><span>Thời gian</span><b>${inc.time}</b></div>
+        <div class="p-row"><span>Xác nhận</span><b>${inc.confirms} người</b></div>
+        <span class="p-level" style="background:${levelColor}22;color:${levelColor}">Mức độ: ${LEVEL_LABEL[inc.level]}</span>
+      </div>
+    `);
+  });
+}
+
+/* ---------------------------------------------------------------
+   9. RENDER PANEL "CẢNH BÁO GẦN BẠN" (demo tĩnh)
+--------------------------------------------------------------- */
+function renderNearbyPanel() {
+  const nearby = [
+    { type: 'flood', label: 'Ngập nước', dist: '500m' },
+    { type: 'accident', label: 'Tai nạn', dist: '1.2km' },
+    { type: 'construction', label: 'Công trình', dist: '2.1km' }
+  ];
+  const list = document.getElementById('nearby-list');
+  list.innerHTML = nearby.map(n => {
+    const meta = INCIDENT_TYPES[n.type];
+    return `<div class="np-item">
+              <span class="np-label">${meta.emoji} ${n.label}</span>
+              <span class="np-dist">${n.dist}</span>
+            </div>`;
+  }).join('');
+}
+
+/* ---------------------------------------------------------------
+   10. RENDER 3 TUYẾN ĐƯỜNG + THẺ KẾT QUẢ Ở SIDEBAR
+--------------------------------------------------------------- */
+function renderRoutes(routes, mode) {
+  routeLayerGroup.clearLayers();
+
+  const bounds = [];
+  routes.forEach(route => {
+    const isBest = route.mode === mode;
+    const line = L.polyline(route.coords, {
+      color: route.color,
+      weight: isBest ? 6 : 4,
+      opacity: isBest ? 0.95 : 0.55,
+      dashArray: isBest ? null : '2 8'
+    }).addTo(routeLayerGroup);
+
+    line.bindTooltip(`Tuyến ${route.id} · ${route.name} · ${route.distance}km`, { sticky: true });
+    route.coords.forEach(c => bounds.push(c));
+  });
+
+  if (bounds.length) map.fitBounds(bounds, { padding: [60, 60] });
+
+  // ---- Render card kết quả ở sidebar ----
+  const resultsEl = document.getElementById('route-results');
+  resultsEl.classList.add('show');
+  resultsEl.innerHTML = '<p class="panel-title" style="margin-top:4px;">KẾT QUẢ TUYẾN ĐƯỜNG</p>' +
+    routes.map(route => {
+      const riskColor = route.riskScore >= 66 ? 'var(--risk-high)' : route.riskScore >= 34 ? 'var(--risk-mid)' : 'var(--risk-low)';
+      const isBest = route.mode === mode;
+      return `
+        <div class="route-card ${isBest ? 'best' : ''}">
+          <div class="route-card-head">
+            <span class="title">${route.name}</span>
+            ${isBest ? '<span class="badge">Đề xuất</span>' : ''}
+          </div>
+          <div class="route-stats">
+            <div class="stat"><b>${route.distance} km</b><span>Quãng đường</span></div>
+            <div class="stat"><b>${route.duration} phút</b><span>Thời gian</span></div>
+          </div>
+          <div class="risk-row">
+            <div class="risk-bar-track"><div class="risk-bar-fill" style="width:${route.riskScore}%;background:${riskColor}"></div></div>
+            <span class="risk-value" style="color:${riskColor}">${route.riskScore}/100</span>
+          </div>
+          <ul class="route-points">
+            ${route.highlights.map(h => `<li><i class="fa-solid fa-circle-check"></i>${h}</li>`).join('')}
+          </ul>
+          <button class="choose-btn" onclick="chooseRoute('${route.id}')">Chọn tuyến này</button>
+        </div>`;
+    }).join('');
+}
+
+function chooseRoute(routeId) {
+  showToast(`Đã chọn Tuyến ${routeId}. Bắt đầu chỉ đường...`);
+}
+
+/* ---------------------------------------------------------------
+   11. XỬ LÝ NÚT "TÌM ĐƯỜNG AN TOÀN"
+--------------------------------------------------------------- */
+function onFindRouteClick() {
+  const start = document.getElementById('start-input').value.trim();
+  const end = document.getElementById('end-input').value.trim();
+  if (!start || !end) {
+    showToast('Vui lòng nhập điểm bắt đầu và điểm đến.');
+    return;
+  }
+  const routes = findSafeRoute(start, end, selectedMode);
+  renderRoutes(routes, selectedMode);
+
+  // Trên mobile, tự mở rộng bottom sheet để thấy kết quả
+  if (window.innerWidth <= 820) {
+    document.getElementById('sidebar').classList.add('expanded');
+  }
+}
+
+function swapLocations() {
+  const s = document.getElementById('start-input');
+  const e = document.getElementById('end-input');
+  const tmp = s.value; s.value = e.value; e.value = tmp;
+}
+
+/* ---------------------------------------------------------------
+   12. CHỌN CHẾ ĐỘ (fastest / balanced / safest)
+--------------------------------------------------------------- */
+document.getElementById('mode-group').addEventListener('change', function (e) {
+  selectedMode = e.target.value;
+  document.querySelectorAll('.mode-option').forEach(opt => {
+    opt.classList.toggle('checked', opt.dataset.mode === selectedMode);
+  });
+});
+
+/* ---------------------------------------------------------------
+   13. MODAL BÁO CÁO SỰ CỐ
+--------------------------------------------------------------- */
+function openReportModal() {
+  pendingReportLatLng = null;
+  document.getElementById('report-location').value = '';
+  document.getElementById('report-modal').classList.remove('hidden');
+}
+function closeReportModal() {
+  document.getElementById('report-modal').classList.add('hidden');
+}
+document.getElementById('level-group').addEventListener('change', function (e) {
+  document.querySelectorAll('.level-pill').forEach(p => p.classList.remove('checked'));
+  e.target.closest('.level-pill').classList.add('checked');
+});
+
+/* addIncident(): thêm 1 sự cố mới do người dùng báo cáo vào danh sách
+   demo (chưa gửi lên backend). Trong bản thực tế, hàm này sẽ POST dữ
+   liệu lên API rồi cập nhật lại incidents từ server. */
+function addIncident(newIncident) {
+  incidents.push(newIncident);
+  renderIncidents();
+}
+
+function submitReport() {
+  const type = document.getElementById('report-type').value;
+  const level = document.querySelector('input[name="level"]:checked').value;
+  const desc = document.getElementById('report-desc').value.trim() || 'Không có mô tả.';
+  const latlng = pendingReportLatLng || map.getCenter();
+
+  const newIncident = {
+    id: Date.now(),
+    type, level,
+    lat: latlng.lat, lng: latlng.lng,
+    time: 'Vừa xong',
+    confirms: 1,
+    desc
+  };
+
+  addIncident(newIncident);
+  closeReportModal();
+  showToast('Cảm ơn bạn! Báo cáo đã được ghi nhận.');
+
+  // reset form
+  document.getElementById('report-desc').value = '';
+}
+
+/* ---------------------------------------------------------------
+   14. TOAST THÔNG BÁO NHỎ
+--------------------------------------------------------------- */
+let toastTimer;
+function showToast(msg) {
+  const toast = document.getElementById('toast');
+  document.getElementById('toast-text').textContent = msg;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
+}
+
+/* ---------------------------------------------------------------
+   15. BOTTOM SHEET (MOBILE)
+--------------------------------------------------------------- */
+function toggleSheet() {
+  document.getElementById('sidebar').classList.toggle('expanded');
+}
+
+/* ---------------------------------------------------------------
+   16. KHỞI CHẠY ỨNG DỤNG
+--------------------------------------------------------------- */
+window.addEventListener('DOMContentLoaded', initMap);
+</script>
+</body>
+</html>
