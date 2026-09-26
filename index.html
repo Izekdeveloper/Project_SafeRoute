@@ -103,8 +103,9 @@
           </label>
         </div>
 
-        <button class="find-btn" onclick="onFindRouteClick()">
-          <i class="fa-solid fa-route"></i> Tìm đường an toàn
+        <button class="find-btn" id="find-btn" onclick="onFindRouteClick()">
+          <i class="fa-solid fa-route" id="find-btn-icon"></i>
+          <span id="find-btn-label">Tìm đường an toàn</span>
         </button>
       </div>
 
@@ -229,12 +230,13 @@
      - alpha = 3  → chế độ "An toàn nhất" (ưu tiên né rủi ro rất mạnh)
 
    Ở phiên bản PROTOTYPE này, chúng ta CHƯA dựng đồ thị thật với hàng trăm
-   giao lộ + chưa chạy Dijkstra/A*. Thay vào đó, findSafeRoute() trả về
-   3 tuyến đường mẫu (hard-code toạ độ) tương ứng với 3 alpha ở trên, để
-   demo giao diện & luồng tương tác. Khi có dữ liệu OSM thật (danh sách
-   node/edge của thành phố), ta chỉ cần thay phần bên trong findSafeRoute()
-   bằng thuật toán Dijkstra/A* chạy trên weight ở công thức trên — toàn bộ
-   phần giao diện, renderRoutes(), renderIncidents() có thể giữ nguyên.
+   giao lộ + chưa chạy Dijkstra/A*. Thay vào đó, findSafeRoute() sinh ra
+   3 tuyến đường minh hoạ (nội suy toạ độ giữa điểm bắt đầu và điểm đến
+   thật) tương ứng với 3 alpha ở trên, để demo giao diện & luồng tương
+   tác. Khi có dữ liệu OSM thật (danh sách node/edge của thành phố), ta
+   chỉ cần thay phần bên trong findSafeRoute() bằng thuật toán Dijkstra/A*
+   chạy trên weight ở công thức trên — toàn bộ phần giao diện,
+   renderRoutes(), renderIncidents() có thể giữ nguyên.
 ================================================================ */
 
 /* ---------------------------------------------------------------
@@ -269,29 +271,17 @@ let incidents = [
 ];
 
 /* ---------------------------------------------------------------
-   3. DỮ LIỆU DEMO — 3 TUYẾN ĐƯỜNG ỨNG VỚI 3 CHẾ ĐỘ
-   Toạ độ chỉ mang tính minh hoạ, không phải dữ liệu định tuyến thật.
+   3. DỮ LIỆU CẤU HÌNH 3 CHẾ ĐỘ TUYẾN ĐƯỜNG (KHÔNG chứa toạ độ cố định)
+   Trước đây mỗi tuyến có `coords` hard-code quanh Chợ Bến Thành nên dù
+   đổi điểm bắt đầu/đến, tuyến vẽ ra vẫn luôn ở chỗ cũ — đây là lỗi đã sửa.
+   Giờ toạ độ tuyến được SINH RA động trong findSafeRoute() dựa trên
+   startLocation/endLocation hiện tại (xem createDemoRouteCoords() bên dưới).
 --------------------------------------------------------------- */
-const ROUTES_DATA = {
-  fastest: {
-    id: 'A', name: 'NHANH NHẤT', mode: 'fastest', alpha: 0,
-    distance: 5.2, duration: 14, riskScore: 72, color: '#e3492c',
-    coords: [[10.7725,106.6980],[10.7758,106.6995],[10.7793,106.7010],[10.7822,106.7035],[10.7845,106.7060],[10.7871,106.7090]],
-    highlights: ['Thời gian di chuyển ngắn nhất', 'Đi xuyên qua khu vực đang ngập nhẹ', 'Có đoạn qua điểm ùn tắc giờ cao điểm']
-  },
-  balanced: {
-    id: 'B', name: 'CÂN BẰNG', mode: 'balanced', alpha: 1,
-    distance: 5.8, duration: 16, riskScore: 35, color: '#f4b400',
-    coords: [[10.7725,106.6980],[10.7750,106.7010],[10.7780,106.7040],[10.7810,106.7055],[10.7840,106.7075],[10.7871,106.7090]],
-    highlights: ['Cân bằng giữa thời gian và độ an toàn', 'Tránh điểm ngập nặng nhất', 'Vẫn đi gần khu vực có báo cáo ùn tắc']
-  },
-  safest: {
-    id: 'C', name: 'AN TOÀN NHẤT', mode: 'safest', alpha: 3,
-    distance: 6.4, duration: 19, riskScore: 12, color: '#12b76a',
-    coords: [[10.7725,106.6980],[10.7715,106.7030],[10.7735,106.7075],[10.7775,106.7100],[10.7820,106.7110],[10.7871,106.7090]],
-    highlights: ['Ít điểm ngập', 'Không có tai nạn nghiêm trọng', 'Tránh khu vực đang thi công']
-  }
-};
+const ROUTE_MODE_CONFIGS = [
+  { id: 'A', name: 'NHANH NHẤT',   mode: 'fastest',  alpha: 0, distance: 5.2, duration: 14, riskScore: 72, color: '#e3492c', routeIndex: 0 },
+  { id: 'B', name: 'CÂN BẰNG',     mode: 'balanced', alpha: 1, distance: 5.8, duration: 16, riskScore: 35, color: '#f4b400', routeIndex: 1 },
+  { id: 'C', name: 'AN TOÀN NHẤT', mode: 'safest',   alpha: 3, distance: 6.4, duration: 19, riskScore: 12, color: '#12b76a', routeIndex: 2 }
+];
 
 /* ---------------------------------------------------------------
    4. TRẠNG THÁI CHUNG (state)
@@ -309,6 +299,8 @@ let startMarker = null;
 let selectingStartOnMap = false; // true khi người dùng đang chờ click bản đồ để chọn điểm bắt đầu
 let startSearchTimer = null;
 let startSearchToken = 0;        // đảm bảo chỉ áp dụng kết quả của lần tìm kiếm mới nhất
+let endSearchToken = 0;          // đảm bảo chỉ dùng kết quả geocode điểm đến mới nhất
+let isFindingRoute = false;      // chặn không cho bấm "Tìm đường" nhiều lần cùng lúc
 
 /* ---------------------------------------------------------------
    5. KHỞI TẠO BẢN ĐỒ (mặc định trung tâm TP.HCM)
@@ -353,6 +345,7 @@ function initMap() {
     updateStartMarker(startLocation.lat, startLocation.lng, startLocation.label);
   }
   initStartLocationControls();
+  initEndLocationControls();
 }
 
 /* ---------------------------------------------------------------
@@ -362,7 +355,7 @@ function initMap() {
      riskScore = floodRisk + accidentRisk + constructionRisk
                  + trafficRisk + communityReports   (rồi chuẩn hoá về 0→1)
 
-   Ở bản demo, mỗi tuyến đã có riskScore mẫu dựng sẵn (ROUTES_DATA),
+   Ở bản demo, mỗi tuyến đã có riskScore mẫu dựng sẵn (ROUTE_MODE_CONFIGS),
    hàm này minh hoạ cách một hệ thống thật sẽ tổng hợp điểm rủi ro
    từ các sự cố cộng đồng nằm gần tuyến đường.
 --------------------------------------------------------------- */
@@ -613,6 +606,54 @@ function renderStartSuggestions(results) {
 }
 
 /* ---------------------------------------------------------------
+   6c. GEOCODE ĐIỂM ĐẾN (Nominatim) + KIỂM TRA TOẠ ĐỘ HỢP LỆ
+--------------------------------------------------------------- */
+
+// Kiểm tra một cặp toạ độ có nằm trong phạm vi hợp lệ hay không
+function isValidCoordinate(lat, lng) {
+  return Number.isFinite(Number(lat))
+    && Number.isFinite(Number(lng))
+    && Number(lat) >= -90
+    && Number(lat) <= 90
+    && Number(lng) >= -180
+    && Number(lng) <= 180;
+}
+
+// Xoá endLocation mỗi khi người dùng gõ lại ô "Điểm đến" — tránh dùng nhầm
+// toạ độ đã geocode của lần nhập trước đó
+function initEndLocationControls() {
+  document.getElementById('end-input').addEventListener('input', function () {
+    endLocation = null;
+  });
+}
+
+// Chuyển text điểm đến thành toạ độ qua Nominatim. Trả về:
+//   { lat, lng, label, source: 'end-search' }  khi thành công
+//   null  khi không tìm thấy địa điểm
+// Ném lỗi (throw) khi bản thân request thất bại, để onFindRouteClick() bắt
+// và hiển thị toast phù hợp thay vì làm crash ứng dụng.
+async function geocodeEndLocation(query) {
+  const token = ++endSearchToken; // nếu có lần gọi mới hơn thì bỏ kết quả cũ
+
+  const res = await fetch('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({
+    format: 'json', q: query, limit: '1', countrycodes: 'vn', addressdetails: '1'
+  }), { headers: { 'Accept-Language': 'vi' } });
+
+  if (!res.ok) throw new Error('Nominatim error');
+  const results = await res.json();
+
+  if (token !== endSearchToken) return null; // đã có query mới hơn xen vào
+
+  if (!results || results.length === 0) return null;
+
+  const r = results[0];
+  const lat = Number(r.lat), lng = Number(r.lon);
+  if (!isValidCoordinate(lat, lng)) return null;
+
+  return { lat, lng, label: r.display_name, source: 'end-search' };
+}
+
+/* ---------------------------------------------------------------
    7. HÀM TÌM ĐƯỜNG AN TOÀN (mô phỏng Dijkstra/A*)
    alpha (mức ưu tiên an toàn) được quyết định bởi mode đã chọn:
       fastest  -> alpha = 0
@@ -620,15 +661,55 @@ function renderStartSuggestions(results) {
       safest   -> alpha = 3
    weight = distance * (1 + alpha * riskScoreNormalized)
 --------------------------------------------------------------- */
+
+// Sinh toạ độ minh hoạ cho MỘT tuyến, luôn bắt đầu đúng tại start và kết
+// thúc đúng tại end — đây chỉ là đường MINH HOẠ (nội suy tuyến tính + lệch
+// nhẹ để 3 tuyến không trùng nhau), KHÔNG PHẢI đường giao thông thực tế.
+// Muốn có tuyến đường thật, cần thay hàm này bằng lời gọi tới một routing
+// engine thật như OSRM, GraphHopper, Valhalla... (nhận start/end rồi trả
+// về geometry đường đi thực tế trên lưới đường bộ).
+function createDemoRouteCoords(start, end, routeIndex) {
+  const points = [];
+  const numberOfPoints = 7;
+
+  for (let i = 0; i < numberOfPoints; i++) {
+    const t = i / (numberOfPoints - 1);
+
+    const lat = start.lat + (end.lat - start.lat) * t;
+    const lng = start.lng + (end.lng - start.lng) * t;
+
+    let offsetLat = 0;
+    let offsetLng = 0;
+
+    if (routeIndex === 1) offsetLat = Math.sin(t * Math.PI) * 0.003;
+    if (routeIndex === 2) offsetLng = Math.sin(t * Math.PI) * 0.003;
+
+    points.push([lat + offsetLat, lng + offsetLng]);
+  }
+
+  // Đảm bảo điểm đầu/cuối khớp CHÍNH XÁC với start/end, không lệch do offset
+  points[0] = [start.lat, start.lng];
+  points[points.length - 1] = [end.lat, end.lng];
+
+  return points;
+}
+
 function findSafeRoute(start, end, mode) {
-  // ---- DEMO: trả thẳng dữ liệu mẫu ứng với 3 chế độ ----
-  // start giờ là object { lat, lng, label, source } (xem setStartLocation ở trên)
-  // thay vì chỉ là text, để sẵn sàng kết nối OSRM/GraphHopper/engine thật sau này.
-  // Thuật toán thật sẽ: dựng graph từ OSM -> chạy Dijkstra/A* với
-  // hàm trọng số weight(edge) = edge.distance * (1 + alpha * edge.riskScore)
-  // rồi trả về đường đi có tổng weight nhỏ nhất.
+  // ---- DEMO: 3 tuyến minh hoạ được sinh từ toạ độ start/end thật ----
+  // start/end đều là object { lat, lng, label, source }. Khoảng cách,
+  // thời gian, riskScore vẫn là số minh hoạ (ROUTE_MODE_CONFIGS) — muốn
+  // tính đúng cần gọi routing engine thật (OSRM/GraphHopper) + calculateRiskScore().
   console.log('findSafeRoute(demo): start =', start, '-> end =', end, '| mode =', mode);
-  return Object.values(ROUTES_DATA);
+
+  return ROUTE_MODE_CONFIGS.map(config => ({
+    ...config,
+    coords: createDemoRouteCoords(start, end, config.routeIndex),
+    highlights: [
+      `Điểm bắt đầu: ${start.label}`,
+      `Điểm đến: ${end.label}`,
+      'Tuyến đường minh hoạ trong bản demo'
+    ]
+  }));
 }
 
 /* ---------------------------------------------------------------
@@ -738,26 +819,65 @@ function chooseRoute(routeId) {
 /* ---------------------------------------------------------------
    11. XỬ LÝ NÚT "TÌM ĐƯỜNG AN TOÀN"
 --------------------------------------------------------------- */
-function onFindRouteClick() {
-  const end = document.getElementById('end-input').value.trim();
+async function onFindRouteClick() {
+  if (isFindingRoute) return; // đang xử lý -> bỏ qua các lần bấm thêm
 
-  // Ưu tiên toạ độ đã chọn (GPS / click bản đồ / tìm kiếm) thay vì text thô
-  if (!startLocation) {
-    showToast('Vui lòng chọn điểm bắt đầu.');
+  const endText = document.getElementById('end-input').value.trim();
+
+  // 1-2) Kiểm tra điểm bắt đầu đã có toạ độ hợp lệ chưa
+  if (!startLocation || !isValidCoordinate(startLocation.lat, startLocation.lng)) {
+    showToast('Vui lòng chọn điểm bắt đầu hợp lệ.');
     return;
   }
-  if (!end) {
+  // 3) Điểm đến: bắt buộc phải có text
+  if (!endText) {
     showToast('Vui lòng nhập điểm đến.');
     return;
   }
 
-  const routes = findSafeRoute(startLocation, end, selectedMode);
-  renderRoutes(routes, selectedMode);
+  isFindingRoute = true;
+  setFindButtonLoading(true);
 
-  // Trên mobile, tự mở rộng bottom sheet để thấy kết quả
-  if (window.innerWidth <= 820) {
-    document.getElementById('sidebar').classList.add('expanded');
+  try {
+    // 4-5) Chỉ geocode lại nếu chưa có toạ độ điểm đến (endLocation bị xoá
+    // mỗi khi người dùng gõ lại ô "Điểm đến" — xem initEndLocationControls())
+    if (!endLocation) {
+      endLocation = await geocodeEndLocation(endText);
+    }
+
+    if (!endLocation || !isValidCoordinate(endLocation.lat, endLocation.lng)) {
+      showToast('Không tìm thấy điểm đến.');
+      endLocation = null;
+      return;
+    }
+
+    // 6-7) Tìm đường bằng TOẠ ĐỘ (không còn dùng text điểm đến nữa)
+    const routes = findSafeRoute(startLocation, endLocation, selectedMode);
+    renderRoutes(routes, selectedMode);
+
+    console.log('Route start:', routes[0].coords[0]);
+    console.log('Expected start:', [startLocation.lat, startLocation.lng]);
+
+    // Trên mobile, tự mở rộng bottom sheet để thấy kết quả
+    if (window.innerWidth <= 820) {
+      document.getElementById('sidebar').classList.add('expanded');
+    }
+  } catch (error) {
+    console.error(error);
+    showToast('Không thể xác định điểm đến.');
+  } finally {
+    isFindingRoute = false;
+    setFindButtonLoading(false);
   }
+}
+
+// Bật/tắt trạng thái "Đang tìm..." trên nút Tìm đường, đồng thời disable
+// nút để tránh người dùng gửi nhiều request geocode cùng lúc.
+function setFindButtonLoading(isLoading) {
+  const btn = document.getElementById('find-btn');
+  const label = document.getElementById('find-btn-label');
+  btn.disabled = isLoading;
+  label.textContent = isLoading ? 'Đang tìm...' : 'Tìm đường an toàn';
 }
 
 function swapLocations() {
@@ -769,19 +889,21 @@ function swapLocations() {
   startInput.value = endInput.value;
   endInput.value = tmpText;
 
-  // Đổi chỗ toạ độ đã lưu tương ứng (endLocation hiện chưa được chọn ở bản này
-  // nên nếu start có toạ độ mà end thì không, sau khi swap start sẽ mất toạ độ
-  // — đúng theo quy tắc: không có toạ độ thì không thể "chọn" — người dùng
-  // cần chọn lại điểm bắt đầu bằng GPS/bản đồ/tìm kiếm).
-  const tmpLoc = startLocation;
+  // Đổi chỗ toạ độ tương ứng. Nếu một bên chưa có toạ độ (null), sau khi
+  // swap bên kia cũng sẽ thành null — đúng nguyên tắc "không giữ nhầm toạ độ
+  // cũ (vd. Chợ Bến Thành)" khi điểm còn lại chưa từng được geocode.
+  const temp = startLocation;
   startLocation = endLocation;
-  endLocation = tmpLoc;
+  endLocation = temp;
 
   if (startLocation) {
     updateStartMarker(startLocation.lat, startLocation.lng, startLocation.label);
-  } else if (startMarker) {
-    map.removeLayer(startMarker);
-    startMarker = null;
+  } else {
+    if (startMarker) {
+      map.removeLayer(startMarker);
+      startMarker = null;
+    }
+    showToast('Vui lòng chọn lại điểm bắt đầu.');
   }
 }
 

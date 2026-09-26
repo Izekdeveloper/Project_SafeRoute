@@ -226,6 +226,8 @@ input,select,textarea{font-family:inherit;}
 }
 .find-btn:hover{background:var(--primary-dark);}
 .find-btn:active{transform:scale(.98);}
+.find-btn:disabled{opacity:.65;cursor:not-allowed;transform:none;}
+.find-btn:disabled:hover{background:var(--primary);}
 
 /* Route result cards */
 #route-results{margin-top:22px;display:none;flex-direction:column;gap:12px;}
