@@ -19,7 +19,7 @@ function _ui_isValidCoordinate(lat, lng) { return (window.isValidCoordinate || (
 
 function _addOrConfirmIncident(data) {
   if (typeof window !== 'undefined' && typeof window.addOrConfirmIncident === 'function') {
-    window.addOrConfirmIncident(data);
+    return window.addOrConfirmIncident(data);
   }
 }
 
@@ -260,17 +260,22 @@ function selectReportLocation(latlng, customLabel) {
   }
 }
 
+let reportSelectedOsmId = null;
+
 async function updateReportLocationText(lat, lng) {
   const input = document.getElementById('report-location');
   if (!input) return;
   input.value = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
   try {
     const res = await fetch('https://nominatim.openstreetmap.org/reverse?' + new URLSearchParams({
-      format: 'json', lat: String(lat), lon: String(lng), zoom: '18', addressdetails: '1'
-    }), { headers: { 'Accept-Language': 'vi' } });
+      format: 'json', lat: String(lat), lon: String(lng), zoom: '18', addressdetails: '1', 'accept-language': 'vi'
+    }));
     if (!res.ok) return;
     const data = await res.json();
     if (data?.display_name) input.value = _ui_shortenDisplayName(data.display_name);
+    if (data?.osm_type === 'way' && data?.osm_id) {
+      reportSelectedOsmId = String(data.osm_id);
+    }
   } catch (_) {}
 }
 
@@ -326,8 +331,8 @@ async function searchReportLocation(query) {
   const token = ++reportSearchToken;
   try {
     const res = await fetch('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({
-      format: 'json', q: query, limit: '5', countrycodes: 'vn', addressdetails: '1'
-    }), { headers: { 'Accept-Language': 'vi' } });
+      format: 'json', q: query, limit: '5', countrycodes: 'vn', addressdetails: '1', 'accept-language': 'vi'
+    }));
     if (token !== reportSearchToken) return;
     if (!res.ok) throw new Error();
     const results = await res.json();
@@ -349,12 +354,12 @@ function renderReportSuggestions(results) {
   }
 
   box.innerHTML = results.map(r => {
-    const s = shortenDisplayName(r.display_name);
+    const s = _ui_shortenDisplayName(r.display_name);
     const m = s.split(',')[0], sub = s.split(',').slice(1).join(',').trim();
-    const safeDisplay = escapeHtml(r.display_name).replace(/'/g, '&#39;');
+    const safeDisplay = _ui_escapeHtml(r.display_name).replace(/'/g, '&#39;');
     return `<li class="suggestion-item" role="option" onclick="selectReportSuggestion(${+r.lat}, ${+r.lon}, '${safeDisplay}')">
       <i class="fa-solid fa-location-dot"></i>
-      <div><div class="s-main">${escapeHtml(m)}</div>${sub ? `<div class="s-sub">${escapeHtml(sub)}</div>` : ''}</div>
+      <div><div class="s-main">${_ui_escapeHtml(m)}</div>${sub ? `<div class="s-sub">${_ui_escapeHtml(sub)}</div>` : ''}</div>
     </li>`;
   }).join('');
   box.classList.remove('hidden');
@@ -362,7 +367,7 @@ function renderReportSuggestions(results) {
 }
 
 function selectReportSuggestion(lat, lon, rawDisplayName) {
-  const label = shortenDisplayName(rawDisplayName);
+  const label = _ui_shortenDisplayName(rawDisplayName);
   const input = document.getElementById('report-location');
   if (input) {
     input.value = label;
@@ -374,12 +379,12 @@ function selectReportSuggestion(lat, lon, rawDisplayName) {
   if (reportMap) reportMap.setView([latlng.lat, latlng.lng], 16);
 }
 
-function submitReport() {
+async function submitReport() {
   const type = document.getElementById('report-type')?.value;
   const level = document.querySelector('input[name="level"]:checked')?.value || 'thap';
   const desc = document.getElementById('report-desc')?.value.trim();
 
-  if (!reportSelectedLatLng || !isValidCoordinate(reportSelectedLatLng.lat, reportSelectedLatLng.lng)) {
+  if (!reportSelectedLatLng || !_ui_isValidCoordinate(reportSelectedLatLng.lat, reportSelectedLatLng.lng)) {
     showToast('Vui lòng chọn vị trí xảy ra sự cố trên bản đồ hoặc từ danh sách gợi ý.');
     return;
   }
@@ -390,16 +395,26 @@ function submitReport() {
 
   const reportedLat = reportSelectedLatLng.lat;
   const reportedLng = reportSelectedLatLng.lng;
-
-  _addOrConfirmIncident({
-    type,
-    level,
-    lat: reportedLat,
-    lng: reportedLng,
-    desc: desc
-  });
+  const locationLabel = document.getElementById('report-location')?.value?.trim() || '';
 
   closeReportModal();
+
+  try {
+    await _addOrConfirmIncident({
+      type,
+      level,
+      lat: reportedLat,
+      lng: reportedLng,
+      desc: desc,
+      locationLabel: locationLabel,
+      osmWayId: reportSelectedOsmId
+    });
+  } catch (err) {
+    console.error('[SafeRoute] Lỗi khi thêm sự cố:', err);
+  } finally {
+    reportSelectedOsmId = null;
+  }
+
   showToast('Đã gửi báo cáo sự cố. Cảm ơn bạn đã đóng góp cho cộng đồng!');
 
   // Di chuyển camera bản đồ chính tới vị trí sự cố vừa báo

@@ -336,15 +336,85 @@ input,select,textarea{font-family:inherit;}
   padding:3px 8px;border-radius:999px;
 }
 
-/* Custom incident divIcon */
-.incident-marker{
-  width:30px;height:30px;border-radius:50% 50% 50% 0;
-  background:#fff;border:2px solid var(--border);
-  display:flex;align-items:center;justify-content:center;
-  transform:rotate(45deg);box-shadow:var(--shadow-sm);
-  font-size:14px;
+/* Custom incident pin divIcon - Mũi nhọn chỉ thẳng xuống tim đường */
+.incident-marker-container {
+  background: transparent !important;
+  border: none !important;
+  overflow: visible !important;
 }
-.incident-marker span{transform:rotate(-45deg);}
+
+.incident-pin-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  width: 36px;
+  height: 42px;
+  pointer-events: auto;
+  cursor: pointer;
+  filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.35));
+}
+
+.incident-pin-card {
+  width: 32px;
+  height: 32px;
+  background: #ffffff;
+  border-width: 2.5px;
+  border-style: solid;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+  z-index: 2;
+  transition: transform 0.15s ease-in-out;
+}
+
+.incident-pin-card:hover {
+  transform: scale(1.1);
+}
+
+.incident-pin-emoji {
+  display: inline-block;
+  user-select: none;
+  transform: none; /* Thẳng đứng, tuyệt đối không xoay nghiêng */
+}
+
+/* Mũi nhọn tam giác chỉ thẳng đứng xuống con đường */
+.incident-pin-arrow {
+  width: 0;
+  height: 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-top-width: 9px;
+  border-top-style: solid;
+  margin-top: -1px;
+  z-index: 1;
+}
+
+/* Badge số người báo cáo nằm nổi bật phía trên pin */
+.incident-badge-count {
+  position: absolute;
+  top: -12px;
+  background: var(--risk-high);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 1px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+  border: 1.5px solid #fff;
+  z-index: 10;
+  pointer-events: none;
+  animation: pulse-badge 2s infinite ease-in-out;
+}
+@keyframes pulse-badge {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
 
 /* ==============================================================
    3. MODAL BÁO CÁO SỰ CỐ
@@ -450,4 +520,152 @@ input,select,textarea{font-family:inherit;}
 }
 .report-location-wrap {
   position: relative;
+}
+
+
+/* ==============================================================
+   ROUTE WARNINGS — Cảnh báo sự cố trên tuyến đường đã chọn
+   ============================================================== */
+.route-warnings {
+  margin-top: 10px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1.5px solid var(--border);
+}
+.route-warnings.rw-high {
+  border-color: var(--risk-high);
+  background: #fef2f2;
+}
+.route-warnings.rw-medium {
+  border-color: var(--risk-mid);
+  background: #fffbeb;
+}
+
+.rw-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.rw-high .rw-header { background: #fde8e8; color: var(--risk-high); }
+.rw-medium .rw-header { background: #fef3cd; color: #92400e; }
+
+.rw-header-label { display: flex; align-items: center; gap: 4px; }
+.rw-header-count {
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(0,0,0,.08);
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+
+.rw-list {
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rw-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 9px;
+}
+.rw-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.rw-item-type {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+.rw-zone {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+.rw-zone-direct {
+  background: #fde8e8;
+  color: var(--risk-high);
+}
+.rw-zone-nearby {
+  background: #fef3cd;
+  color: #92400e;
+}
+
+.rw-item-desc {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  margin-bottom: 4px;
+}
+.rw-item-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.rw-item-meta b { font-weight: 700; }
+
+.rw-suggest {
+  margin: 6px 10px 10px;
+  padding: 10px;
+  background: #eef6ff;
+  border: 1px solid #93c5fd;
+  border-radius: 6px;
+}
+.rw-suggest-text {
+  font-size: 12px;
+  color: #1e40af;
+  line-height: 1.45;
+  margin-bottom: 8px;
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+.rw-suggest-text i { margin-top: 1px; flex: 0 0 auto; }
+.rw-suggest-text b { font-weight: 700; }
+.rw-suggest-btn {
+  width: 100%;
+  padding: 9px;
+  border: none;
+  border-radius: 6px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: background .15s;
+}
+.rw-suggest-btn:hover { background: #1d4ed8; }
+
+.rw-suggest.rw-suggest-info {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  background: var(--primary-light);
+  border-color: var(--primary);
+  font-size: 12px;
+  color: var(--primary-dark);
+  line-height: 1.45;
+}
+.rw-suggest.rw-suggest-info i { margin-top: 1px; flex: 0 0 auto; }
+.rw-suggest.rw-suggest-info b { font-weight: 700; }
+
+.routes-summary {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-weight: 500;
+  margin: 0 0 8px;
 }

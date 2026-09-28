@@ -156,6 +156,41 @@ async function findSafeRoutes(start, end) {
   }
   if (validRoutes.length === 0) return [];
 
+  // ===== WAYPOINT AVOIDANCE ROUTING =====
+  // Luôn chủ động tạo các tuyến đường vòng tránh khu vực có sự cố/nguy hiểm
+  try {
+    const avoidanceRoutes = await _generateAvoidanceRoutes(start, end, validRoutes);
+    if (avoidanceRoutes.length > 0) {
+      validRoutes.push(...avoidanceRoutes);
+      console.log(`[SafeRoute] Đã bổ sung ${avoidanceRoutes.length} tuyến tránh sự cố vào tập ứng viên.`);
+    }
+  } catch (err) {
+    console.warn('[SafeRoute] Lỗi tạo tuyến tránh:', err);
+  }
+
+  // Chấm điểm rủi ro chính xác cho toàn bộ các tuyến ứng viên
+  validRoutes.forEach(r => {
+    r.riskScore = calculateRouteRisk(r);
+  });
+
+  // Loại trùng lặp tuyến
+  validRoutes = _deduplicateRoutes(validRoutes);
+
+  // Chọn lọc tối đa 6 tuyến ứng viên chất lượng:
+  // Đảm bảo tập hợp luôn có cả tuyến rủi ro thấp nhất (an toàn nhất) và tuyến nhanh nhất
+  if (validRoutes.length > 6) {
+    const sortedByRisk = [...validRoutes].sort((a, b) => {
+      if (a.riskScore !== b.riskScore) return a.riskScore - b.riskScore;
+      return a.duration - b.duration;
+    });
+    const fastest = [...validRoutes].sort((a, b) => a.duration - b.duration)[0];
+    const pool = sortedByRisk.slice(0, 5);
+    if (!pool.some(r => r === fastest)) {
+      pool.push(fastest);
+    }
+    validRoutes = pool;
+  }
+
   return validRoutes.map((route, index) => ({
     ...route,
     id: String.fromCharCode(65 + index),
@@ -373,25 +408,394 @@ function renderTransportFallback(fallback, opts = {}) {
 --------------------------------------------------------------- */
 function calculateRouteRisk(route) {
   let raw = 0;
-  for (const inc of incidents) {
-    const c = calculateCurrentConfidence(inc);
+  const incList = (typeof window !== 'undefined' && window.incidents) ? window.incidents : (typeof incidents !== 'undefined' ? incidents : []);
+  const confFn = (typeof window !== 'undefined' && window.calculateCurrentConfidence) ? window.calculateCurrentConfidence : (typeof calculateCurrentConfidence === 'function' ? calculateCurrentConfidence : (() => 50));
+  const minDistFn = (typeof window !== 'undefined' && window.minDistanceToPolyline) ? window.minDistanceToPolyline : (typeof minDistanceToPolyline === 'function' ? minDistanceToPolyline : _minDistanceToPolyline);
+  const now = Date.now();
+
+  for (const inc of incList) {
+    const c = confFn(inc, now);
     if (c <= 0) continue;
-    const distM = minDistanceToPolyline(inc.lat, inc.lng, route.coords);
+    let distM = minDistFn(inc.lat, inc.lng, route.coords);
+    if (inc.nodes && inc.nodes.length > 0) {
+      for (const node of inc.nodes) {
+        const dN = minDistFn(node.lat, node.lng, route.coords);
+        if (dN < distM) distM = dN;
+      }
+    }
+    if (inc.roadCoords && inc.roadCoords.length >= 2) {
+      for (const pt of inc.roadCoords) {
+        const dP = minDistFn(pt[0], pt[1], route.coords);
+        if (dP < distM) distM = dP;
+      }
+    }
+
+    // Nếu sự cố xảy ra ở chiều xe chạy ngược lại trên đường 2 chiều (bên kia dải phân cách/đường đối diện):
+    // Phân tích góc hướng phương vị của tuyến đường tại vị trí gần sự cố nhất
+    let directionalFactor = 1.0;
+    if (inc.roadBearing != null && route.coords && route.coords.length >= 2) {
+      let nearestRouteIdx = 0;
+      let minD = Infinity;
+      const refLat = inc.lat;
+      const refLng = inc.lng;
+      for (let k = 0; k < route.coords.length; k++) {
+        const dK = Math.hypot(route.coords[k][0] - refLat, route.coords[k][1] - refLng);
+        if (dK < minD) { minD = dK; nearestRouteIdx = k; }
+      }
+      let nextIdx = Math.min(route.coords.length - 1, nearestRouteIdx + 1);
+      if (nextIdx === nearestRouteIdx && nearestRouteIdx > 0) nextIdx = nearestRouteIdx - 1;
+      if (nextIdx !== nearestRouteIdx) {
+        const rBearing = _bearingRad(
+          route.coords[nearestRouteIdx][0], route.coords[nearestRouteIdx][1],
+          route.coords[nextIdx][0], route.coords[nextIdx][1]
+        ) * 180 / Math.PI;
+        const normRBearing = (rBearing + 360) % 360;
+        let diff = Math.abs(normRBearing - inc.roadBearing) % 360;
+        if (diff > 180) diff = 360 - diff;
+        // Nếu xe chạy ngược chiều với sự cố (diff > 100 độ) trên đường có phân làn / dải phân cách:
+        // Giảm đáng kể điểm phạt vì chiều lưu thông của xe đang đi không bị chặn!
+        if (diff > 100) {
+          directionalFactor = (inc.osmWayId || distM > 10) ? 0.08 : 0.35;
+        }
+      }
+    }
+
     let distW = 0;
-    if (distM < RISK_IMPACT.STRONG_THRESHOLD_M) distW = RISK_IMPACT.STRONG_WEIGHT;
-    else if (distM < RISK_IMPACT.MEDIUM_THRESHOLD_M) distW = RISK_IMPACT.MEDIUM_WEIGHT;
-    if (distW === 0) continue;
+    if (distM < RISK_IMPACT.STRONG_THRESHOLD_M) distW = RISK_IMPACT.STRONG_WEIGHT * directionalFactor;
+    else if (distM < RISK_IMPACT.MEDIUM_THRESHOLD_M) distW = RISK_IMPACT.MEDIUM_WEIGHT * directionalFactor;
+    if (distW <= 0) continue;
     raw += distW * (INCIDENT_TYPE_WEIGHT[inc.type] || 0.1) * (INCIDENT_LEVEL_WEIGHT[inc.level] || 0.2) * (c / 100);
   }
-  return Math.min(100, Math.round((raw / 3.0) * 100));
+  if (raw <= 0) return 0;
+  return Math.min(100, Math.max(1, Math.round((raw / 3.0) * 100)));
 }
 
+/**
+ * Tìm tất cả sự cố nằm gần tuyến đường (trong bán kính MEDIUM_THRESHOLD_M = 300m).
+ * Trả về mảng { incident, distanceM } sắp xếp theo khoảng cách tăng dần.
+ * Dùng để hiển thị cảnh báo chi tiết cho người dùng về rủi ro trên tuyến đường đã chọn.
+ */
+function findIncidentsAlongRoute(route) {
+  const result = [];
+  const incList = (typeof window !== 'undefined' && window.incidents) ? window.incidents : [];
+  const confFn = (typeof window !== 'undefined' && window.calculateCurrentConfidence) ? window.calculateCurrentConfidence : (() => 50);
+  const now = Date.now();
+
+  for (const inc of incList) {
+    const c = confFn(inc, now);
+    if (c <= 0.1) continue;
+    let distM = _minDistanceToPolyline(inc.lat, inc.lng, route.coords);
+    if (inc.nodes && inc.nodes.length > 0) {
+      for (const node of inc.nodes) {
+        const dN = _minDistanceToPolyline(node.lat, node.lng, route.coords);
+        if (dN < distM) distM = dN;
+      }
+    }
+    if (inc.roadCoords && inc.roadCoords.length >= 2) {
+      for (const pt of inc.roadCoords) {
+        const dP = _minDistanceToPolyline(pt[0], pt[1], route.coords);
+        if (dP < distM) distM = dP;
+      }
+    }
+    if (distM < RISK_IMPACT.MEDIUM_THRESHOLD_M) {
+      result.push({
+        incident: inc,
+        distanceM: Math.round(distM),
+        confidence: Math.round(c),
+        zone: distM < RISK_IMPACT.STRONG_THRESHOLD_M ? 'direct' : 'nearby'
+      });
+    }
+  }
+
+  result.sort((a, b) => a.distanceM - b.distanceM);
+  return result;
+}
+
+/* ---------------------------------------------------------------
+   4b. WAYPOINT AVOIDANCE ROUTING
+   Thuật toán tạo tuyến tránh sự cố:
+   1. Phát hiện sự cố trực tiếp trên tuyến đường OSRM
+   2. Gom nhóm sự cố gần nhau thành cluster
+   3. Tính waypoint vuông góc với hướng đường, xa khỏi sự cố
+   4. Gọi OSRM lấy tuyến mới qua waypoint tránh
+   5. Gộp tất cả ứng viên, loại trùng, trả về pool đa dạng
+--------------------------------------------------------------- */
+
+/**
+ * Tính bearing (góc phương vị, radian) từ điểm A đến B trên mặt cầu
+ */
+function _bearingRad(lat1, lng1, lat2, lng2) {
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const la1 = lat1 * Math.PI / 180;
+  const la2 = lat2 * Math.PI / 180;
+  const y = Math.sin(dLng) * Math.cos(la2);
+  const x = Math.cos(la1) * Math.sin(la2) - Math.sin(la1) * Math.cos(la2) * Math.cos(dLng);
+  return Math.atan2(y, x);
+}
+
+/**
+ * Tính điểm đích từ vị trí gốc theo bearing và khoảng cách (mét)
+ * Công thức Haversine nghịch đảo (inverse Haversine)
+ */
+function _destinationPoint(lat, lng, bearing, distanceMeters) {
+  const R = 6371000;
+  const d = distanceMeters / R;
+  const la1 = lat * Math.PI / 180;
+  const lo1 = lng * Math.PI / 180;
+  const la2 = Math.asin(
+    Math.sin(la1) * Math.cos(d) + Math.cos(la1) * Math.sin(d) * Math.cos(bearing)
+  );
+  const lo2 = lo1 + Math.atan2(
+    Math.sin(bearing) * Math.sin(d) * Math.cos(la1),
+    Math.cos(d) - Math.sin(la1) * Math.sin(la2)
+  );
+  return {
+    lat: la2 * 180 / Math.PI,
+    lng: ((lo2 * 180 / Math.PI) + 540) % 360 - 180
+  };
+}
+
+/**
+ * Tính các waypoint tránh sự cố: vuông góc với hướng đường (cả bên trái và bên phải).
+ * @param {Array} routeCoords - Mảng [lat, lng] của tuyến đường
+ * @param {number} incLat - Vĩ độ sự cố
+ * @param {number} incLng - Kinh độ sự cố
+ * @param {number} offsetMeters - Khoảng cách lệch (mét)
+ * @returns {Array<{ lat: number, lng: number }>} Danh sách [wpLeft, wpRight]
+ */
+function _computeAvoidanceWaypoints(routeCoords, incLat, incLng, offsetMeters) {
+  // Tìm điểm gần nhất trên polyline với sự cố
+  let minDist = Infinity, closestIdx = 0;
+  for (let i = 0; i < routeCoords.length; i++) {
+    const d = haversineKm(routeCoords[i][0], routeCoords[i][1], incLat, incLng);
+    if (d < minDist) { minDist = d; closestIdx = i; }
+  }
+
+  const p = routeCoords[closestIdx];
+  const pNext = routeCoords[Math.min(closestIdx + 1, routeCoords.length - 1)];
+  let routeBearing;
+  if (p[0] === pNext[0] && p[1] === pNext[1] && closestIdx > 0) {
+    const pPrev = routeCoords[closestIdx - 1];
+    routeBearing = _bearingRad(pPrev[0], pPrev[1], p[0], p[1]);
+  } else {
+    routeBearing = _bearingRad(p[0], p[1], pNext[0], pNext[1]);
+  }
+
+  // Hai hướng vuông góc với hướng đường (Trái 90° và Phải -90°)
+  const perpLeft = routeBearing + Math.PI / 2;
+  const perpRight = routeBearing - Math.PI / 2;
+
+  const wpLeft = _destinationPoint(p[0], p[1], perpLeft, offsetMeters);
+  const wpRight = _destinationPoint(p[0], p[1], perpRight, offsetMeters);
+
+  return [wpLeft, wpRight];
+}
+
+/**
+ * Gom nhóm sự cố gần nhau (< 500m) thành cluster để tránh tạo quá nhiều waypoint
+ */
+function _clusterIncidents(activeIncidents) {
+  const clusters = [];
+  const used = new Set();
+  for (let i = 0; i < activeIncidents.length; i++) {
+    if (used.has(i)) continue;
+    const cluster = [activeIncidents[i]];
+    used.add(i);
+    for (let j = i + 1; j < activeIncidents.length; j++) {
+      if (used.has(j)) continue;
+      const d = haversineKm(
+        activeIncidents[i].incident.lat, activeIncidents[i].incident.lng,
+        activeIncidents[j].incident.lat, activeIncidents[j].incident.lng
+      );
+      if (d < 0.5) { cluster.push(activeIncidents[j]); used.add(j); }
+    }
+    // Trọng tâm cluster (centroid)
+    const avgLat = cluster.reduce((s, w) => s + w.incident.lat, 0) / cluster.length;
+    const avgLng = cluster.reduce((s, w) => s + w.incident.lng, 0) / cluster.length;
+    // Mức độ nghiêm trọng tổng hợp
+    const severity = cluster.reduce((s, w) => {
+      const lw = INCIDENT_LEVEL_WEIGHT[w.incident.level] || 0.2;
+      return s + (w.confidence / 100) * lw;
+    }, 0);
+    clusters.push({ lat: avgLat, lng: avgLng, count: cluster.length, severity });
+  }
+  clusters.sort((a, b) => b.severity - a.severity);
+  return clusters;
+}
+
+/**
+ * Loại bỏ các tuyến trùng lặp (khoảng cách và thời gian chênh lệch < 3%)
+ */
+function _deduplicateRoutes(routes) {
+  const unique = [];
+  for (const r of routes) {
+    const isDup = unique.some(u =>
+      Math.abs(u.distance - r.distance) / Math.max(u.distance, 0.01) < 0.03 &&
+      Math.abs(u.duration - r.duration) / Math.max(u.duration, 0.01) < 0.03
+    );
+    if (!isDup) unique.push(r);
+  }
+  return unique;
+}
+
+/**
+ * Tạo các tuyến tránh sự cố bằng cách phân tích chướng ngại và tính waypoint trung gian.
+ * Thuật toán:
+ * 1. Thu thập tất cả sự cố nằm trong hành lang ảnh hưởng của các tuyến cơ sở (< 350m).
+ * 2. Gom cụm sự cố (clustering).
+ * 3. Tính toán các điểm lệch tâm (offset) thích ứng hai bên trái/phải trục đường.
+ * 4. Truy vấn OSRM song song (Promise.allSettled) để tìm lộ trình tránh nguy hiểm.
+ */
+async function _generateAvoidanceRoutes(start, end, baseRoutes) {
+  if (!baseRoutes.length) return [];
+
+  const incList = (typeof window !== 'undefined' && window.incidents) ? window.incidents : (typeof incidents !== 'undefined' ? incidents : []);
+  const confFn = (typeof window !== 'undefined' && window.calculateCurrentConfidence) ? window.calculateCurrentConfidence : (typeof calculateCurrentConfidence === 'function' ? calculateCurrentConfidence : (() => 50));
+  const minDistFn = (typeof window !== 'undefined' && window.minDistanceToPolyline) ? window.minDistanceToPolyline : (typeof minDistanceToPolyline === 'function' ? minDistanceToPolyline : _minDistanceToPolyline);
+  const now = Date.now();
+
+  // Tìm tất cả sự cố có hiệu lực nằm gần các tuyến đường cơ bản
+  const activeIncidents = [];
+  for (const inc of incList) {
+    const c = confFn(inc, now);
+    if (c <= 0) continue;
+    let minD = Infinity;
+    for (const r of baseRoutes) {
+      const d = minDistFn(inc.lat, inc.lng, r.coords);
+      if (d < minD) minD = d;
+    }
+    // Nếu sự cố nằm trong phạm vi 350m từ tim đường
+    if (minD < 350) {
+      activeIncidents.push({
+        incident: inc,
+        distanceM: Math.round(minD),
+        confidence: c,
+        level: inc.level || 'thap'
+      });
+    }
+  }
+
+  // Nếu không có bất kỳ sự cố nào ảnh hưởng, tuyến đường đã an toàn
+  if (activeIncidents.length === 0) return [];
+
+  // Gom cụm sự cố
+  const clusters = _clusterIncidents(activeIncidents);
+
+  // Khoảng cách chim bay giữa điểm xuất phát và điểm đến
+  const directDistM = haversineKm(start.lat, start.lng, end.lat, end.lng) * 1000;
+
+  // Khoảng cách offset thích ứng theo độ dài chuyến đi:
+  // - Chuyến ngắn nội thành (1-3km): lệch 300m - 800m
+  // - Chuyến trung bình (3-15km): lệch 600m - 1800m
+  // - Chuyến dài (>15km): lệch 1200m - 3000m
+  const baseOffsets = [
+    Math.max(300, Math.min(800, Math.round(directDistM * 0.25))),
+    Math.max(600, Math.min(1800, Math.round(directDistM * 0.50))),
+    Math.max(1000, Math.min(3000, Math.round(directDistM * 0.80)))
+  ].filter((v, i, a) => a.indexOf(v) === i);
+
+  const candidateWaypoints = [];
+  const primaryRouteCoords = baseRoutes[0].coords;
+
+  // 1. Tạo waypoints vuông góc với từng cluster sự cố (cả 2 bên trái & phải)
+  for (const cluster of clusters.slice(0, 3)) {
+    for (const offset of baseOffsets) {
+      const pair = _computeAvoidanceWaypoints(primaryRouteCoords, cluster.lat, cluster.lng, offset);
+      for (const wp of pair) {
+        if (wp && isPointInVietnam(wp.lat, wp.lng)) {
+          // Tránh đặt waypoint quá sát điểm đầu hoặc điểm cuối (< 150m)
+          const dStart = haversineKm(start.lat, start.lng, wp.lat, wp.lng) * 1000;
+          const dEnd = haversineKm(end.lat, end.lng, wp.lat, wp.lng) * 1000;
+          if (dStart > 150 && dEnd > 150) {
+            candidateWaypoints.push(wp);
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Tạo waypoint lệch sườn giữa hành trình (Midpoint deflection)
+  const midBearing = _bearingRad(start.lat, start.lng, end.lat, end.lng);
+  const midPoint = _destinationPoint(start.lat, start.lng, midBearing, directDistM / 2);
+  const midOffsets = [
+    Math.max(400, Math.min(1500, Math.round(directDistM * 0.35))),
+    Math.max(800, Math.min(2500, Math.round(directDistM * 0.65)))
+  ];
+  for (const offset of midOffsets) {
+    const leftMid = _destinationPoint(midPoint.lat, midPoint.lng, midBearing + Math.PI / 2, offset);
+    const rightMid = _destinationPoint(midPoint.lat, midPoint.lng, midBearing - Math.PI / 2, offset);
+    if (isPointInVietnam(leftMid.lat, leftMid.lng)) candidateWaypoints.push(leftMid);
+    if (isPointInVietnam(rightMid.lat, rightMid.lng)) candidateWaypoints.push(rightMid);
+  }
+
+  // 3. Khử bớt waypoint trùng hoặc quá gần nhau (< 200m)
+  const uniqueWps = [];
+  for (const wp of candidateWaypoints) {
+    const isClose = uniqueWps.some(u => haversineKm(u.lat, u.lng, wp.lat, wp.lng) * 1000 < 200);
+    if (!isClose) uniqueWps.push(wp);
+  }
+
+  // 4. Lấy tối đa 8 waypoints triển vọng nhất và truy vấn OSRM đồng thời
+  const targetWps = uniqueWps.slice(0, 8);
+  const promises = targetWps.map(wp =>
+    fetchOsrmRawRoute([start, wp, end])
+      .then(routes => routes.filter(r => isRouteInsideVietnam(r)))
+      .catch(() => [])
+  );
+
+  const results = await Promise.allSettled(promises);
+  const avoidanceRoutes = [];
+  for (const res of results) {
+    if (res.status === 'fulfilled' && Array.isArray(res.value)) {
+      avoidanceRoutes.push(...res.value);
+    }
+  }
+
+  return avoidanceRoutes;
+}
+
+/**
+ * Sắp xếp các tuyến đường ứng viên theo chế độ người dùng lựa chọn:
+ * - 'fastest': Ưu tiên tuyệt đối thời gian nhanh nhất, bỏ qua rủi ro.
+ * - 'safest': Ưu tiên tuyệt đối an toàn (rủi ro thấp nhất), chấp nhận đi xa hoặc chậm hơn.
+ * - 'balanced': Cân bằng đa tiêu chí theo hàm chi phí w = duration * (1 + alpha * riskScore / 100).
+ */
 function sortRoutesByMode(routes, mode) {
+  if (mode === 'fastest') {
+    return [...routes].sort((a, b) => {
+      if (Math.abs(a.duration - b.duration) > 0.05) {
+        return a.duration - b.duration;
+      }
+      return a.riskScore - b.riskScore;
+    });
+  }
+
+  if (mode === 'safest') {
+    // CHẾ ĐỘ AN TOÀN NHẤT:
+    // Đảm bảo TUYỆT ĐỐI đường an toàn nhất lên đầu (rủi ro thấp nhất),
+    // chấp nhận đi xa hoặc chậm hơn.
+    return [...routes].sort((a, b) => {
+      // 1. Tuyến có mức độ rủi ro thấp hơn chắc chắn đứng trước
+      if (a.riskScore !== b.riskScore) {
+        return a.riskScore - b.riskScore;
+      }
+      // 2. Khi rủi ro bằng nhau (ví dụ cả hai đều hoàn toàn an toàn = 0),
+      // ưu tiên tuyến thời gian ngắn hơn
+      if (Math.abs(a.duration - b.duration) > 0.1) {
+        return a.duration - b.duration;
+      }
+      return a.distance - b.distance;
+    });
+  }
+
+  // Chế độ CÂN BẰNG (balanced):
+  // Hàm mục tiêu đa tiêu chí: w = duration * (1 + alpha * (riskScore / 100))
   const alpha = CONFIG.mode_alpha[mode] ?? 1;
   return [...routes].sort((a, b) => {
-    const wA = a.duration * (1 + alpha * a.riskScore / 100);
-    const wB = b.duration * (1 + alpha * b.riskScore / 100);
-    return wA - wB;
+    const wA = a.duration * (1 + alpha * (a.riskScore / 100));
+    const wB = b.duration * (1 + alpha * (b.riskScore / 100));
+    if (Math.abs(wA - wB) > 0.05) return wA - wB;
+    return a.riskScore - b.riskScore;
   });
 }
 
@@ -441,6 +845,105 @@ function renderRouteSteps(route) {
 }
 
 /* ---------------------------------------------------------------
+   5b. CẢNH BÁO SỰ CỐ TRÊN TUYẾN ĐƯỜNG ĐÃ CHỌN
+--------------------------------------------------------------- */
+
+/**
+ * Xây dựng HTML cảnh báo các sự cố nằm trên/gần tuyến đường đang chọn.
+ * Nếu có sự cố và người dùng chưa ở chế độ "An toàn nhất",
+ * hiển thị nút đề xuất chuyển sang chế độ an toàn hơn.
+ */
+function buildRouteWarningsHtml(route, mode) {
+  const warnings = findIncidentsAlongRoute(route);
+  if (warnings.length === 0) return '';
+
+  const typesMeta = (typeof window !== 'undefined' && window.INCIDENT_TYPES) ? window.INCIDENT_TYPES : {};
+  const esc = (typeof window !== 'undefined' && window.escapeHtml) ? window.escapeHtml : (s => s);
+  const confColorFn = (typeof window !== 'undefined' && window.getConfidenceColor) ? window.getConfidenceColor : (() => 'var(--risk-mid)');
+
+  const directHits = warnings.filter(w => w.zone === 'direct');
+  const nearbyHits = warnings.filter(w => w.zone === 'nearby');
+
+  // Header severity
+  const severity = directHits.length > 0 ? 'high' : 'medium';
+  const sevLabel = severity === 'high'
+    ? `⚠️ ${directHits.length} sự cố trực tiếp trên tuyến đường`
+    : `⚡ ${nearbyHits.length} sự cố gần tuyến đường`;
+
+  // Build incident list
+  const itemsHtml = warnings.map(w => {
+    const inc = w.incident;
+    const meta = typesMeta[inc.type] || { emoji: '⚠️', label: 'Sự cố', color: '#e3492c' };
+    const zoneLabel = w.zone === 'direct'
+      ? `<span class="rw-zone rw-zone-direct">Trên tuyến (${w.distanceM}m)</span>`
+      : `<span class="rw-zone rw-zone-nearby">Lân cận (${w.distanceM}m)</span>`;
+    const confColor = confColorFn(w.confidence);
+
+    return `<div class="rw-item">
+      <div class="rw-item-head">
+        <span class="rw-item-type">${meta.emoji} ${esc(meta.label)}</span>
+        ${zoneLabel}
+      </div>
+      <div class="rw-item-desc">${esc(inc.desc)}</div>
+      <div class="rw-item-meta">
+        <span>Độ tin cậy: <b style="color:${confColor}">${w.confidence}%</b></span>
+        <span>Mức độ: <b>${inc.level === 'cao' ? '🔴 Cao' : inc.level === 'trungbinh' ? '🟡 Trung bình' : '🟢 Thấp'}</b></span>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Suggest safer mode button
+  let suggestHtml = '';
+  if (mode !== 'safest' && directHits.length > 0) {
+    const saferMode = mode === 'fastest' ? 'balanced' : 'safest';
+    const saferLabel = saferMode === 'balanced' ? 'Cân bằng' : 'An toàn nhất';
+    suggestHtml = `<div class="rw-suggest">
+      <div class="rw-suggest-text">
+        <i class="fa-solid fa-shield-halved"></i>
+        Tuyến đường này đi qua ${directHits.length} khu vực có sự cố. Chuyển sang chế độ <b>${saferLabel}</b> để ưu tiên tuyến tránh xa các điểm nguy hiểm.
+      </div>
+      <button class="rw-suggest-btn" onclick="switchToSaferMode('${saferMode}')">
+        <i class="fa-solid fa-route"></i> Tìm đường ${saferLabel.toLowerCase()}
+      </button>
+    </div>`;
+  } else if (mode === 'safest' && directHits.length > 0) {
+    suggestHtml = `<div class="rw-suggest rw-suggest-info">
+      <i class="fa-solid fa-circle-info"></i>
+      Bạn đang ở chế độ <b>An toàn nhất</b>. Đây là tuyến tối ưu nhất có thể — một số sự cố không thể tránh hoàn toàn do hạn chế về đường đi.
+    </div>`;
+  }
+
+  return `<div class="route-warnings ${severity === 'high' ? 'rw-high' : 'rw-medium'}">
+    <div class="rw-header">
+      <span class="rw-header-label">${sevLabel}</span>
+      <span class="rw-header-count">${warnings.length} cảnh báo</span>
+    </div>
+    <div class="rw-list">${itemsHtml}</div>
+    ${suggestHtml}
+  </div>`;
+}
+
+/**
+ * Chuyển sang chế độ an toàn hơn và tự động tìm lại đường
+ */
+function switchToSaferMode(targetMode) {
+  // Cập nhật radio button UI
+  const radio = document.querySelector(`input[name="mode"][value="${targetMode}"]`);
+  if (radio) {
+    radio.checked = true;
+    radio.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  if (typeof window !== 'undefined') {
+    window.selectedMode = targetMode;
+    window.manualRouteSelection = false;
+  }
+  // Gọi tìm đường lại
+  if (typeof window !== 'undefined' && typeof window.onFindRouteClick === 'function') {
+    window.onFindRouteClick();
+  }
+}
+
+/* ---------------------------------------------------------------
    6. VẼ CÁC TUYẾN LÊN BẢN ĐỒ & HIỂN THỊ KẾT QUẢ
 --------------------------------------------------------------- */
 function renderRoutes(routes, mode) {
@@ -451,11 +954,19 @@ function renderRoutes(routes, mode) {
   const sorted = sortRoutesByMode(routes, mode);
   const bounds = [];
 
+  // Tự động chuyển tuyến được chọn sang tuyến tối ưu của chế độ mới (sorted[0])
+  // trừ khi người dùng vừa trực tiếp click chọn một tuyến cụ thể trong chế độ này.
   let selectedRouteId = (typeof window !== 'undefined') ? window.selectedRouteId : null;
-  if (!selectedRouteId || !sorted.some(r => r.id === selectedRouteId)) {
+  const lastMode = (typeof window !== 'undefined') ? window._lastRenderedMode : null;
+
+  if (lastMode !== mode || !window.manualRouteSelection || !sorted.some(r => r.id === selectedRouteId)) {
     selectedRouteId = sorted[0]?.id || null;
-    if (typeof window !== 'undefined') window.selectedRouteId = selectedRouteId;
+    if (typeof window !== 'undefined') {
+      window.selectedRouteId = selectedRouteId;
+      window.manualRouteSelection = false;
+    }
   }
+  if (typeof window !== 'undefined') window._lastRenderedMode = mode;
 
   sorted.forEach((route, idx) => {
     const isSelected = route.id === selectedRouteId;
@@ -491,6 +1002,8 @@ function renderRoutes(routes, mode) {
       const isRecommended = idx === 0;
       const rc = route.riskScore >= 66 ? 'var(--risk-high)' : route.riskScore >= 34 ? 'var(--risk-mid)' : 'var(--risk-low)';
       const color = ROUTE_COLORS[route.routeIndex] || ROUTE_COLORS[0];
+      // Chỉ hiển thị cảnh báo chi tiết cho tuyến đang chọn
+      const warningsHtml = isSelected ? buildRouteWarningsHtml(route, mode) : '';
       return `<div class="route-card ${isSelected ? 'best selected' : ''}">
         <div class="route-card-head">
           <span class="title" style="color:${color}">● Tuyến ${route.id}</span>
@@ -504,6 +1017,7 @@ function renderRoutes(routes, mode) {
           <div class="risk-bar-track"><div class="risk-bar-fill" style="width:${route.riskScore}%;background:${rc}"></div></div>
           <span class="risk-value" style="color:${rc}">${route.riskScore}/100</span>
         </div>
+        ${warningsHtml}
         ${renderRouteSteps(route)}
         ${isSelected
           ? `<button class="choose-btn selected" style="background:var(--primary);color:#fff;cursor:default;">✓ Đang chọn</button>`
@@ -566,6 +1080,7 @@ function chooseRoute(id) {
   if (!target) return;
   if (typeof window !== 'undefined') {
     window.selectedRouteId = id;
+    window.manualRouteSelection = true;
     renderRoutes(currentRoutes, window.selectedMode || 'balanced');
     if (typeof window.showToast === 'function') window.showToast(`Đã chọn Tuyến ${id}. Bắt đầu chỉ đường...`);
   }
@@ -575,6 +1090,7 @@ function chooseRoute(id) {
 if (typeof window !== 'undefined') {
   window.findSafeRoutes = findSafeRoutes;
   window.calculateRouteRisk = calculateRouteRisk;
+  window.findIncidentsAlongRoute = findIncidentsAlongRoute;
   window.sortRoutesByMode = sortRoutesByMode;
   window.renderRoutes = renderRoutes;
   window.chooseRoute = chooseRoute;
@@ -582,4 +1098,5 @@ if (typeof window !== 'undefined') {
   window.planMultimodalFallback = planMultimodalFallback;
   window.showMultimodalOption = showMultimodalOption;
   window.backToRoadRoutes = backToRoadRoutes;
+  window.switchToSaferMode = switchToSaferMode;
 }

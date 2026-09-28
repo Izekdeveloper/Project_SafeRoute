@@ -244,8 +244,8 @@ function selectEndFromMap(latlng) {
 
 function reverseGeocodeEndLabel(lat, lng) {
   fetch('https://nominatim.openstreetmap.org/reverse?' + new URLSearchParams({
-    format: 'json', lat: String(lat), lon: String(lng), zoom: '18', addressdetails: '1'
-  }), { headers: { 'Accept-Language': 'vi' } })
+    format: 'json', lat: String(lat), lon: String(lng), zoom: '18', addressdetails: '1', 'accept-language': 'vi'
+  }))
     .then(r => r.ok ? r.json() : null)
     .then(d => {
       if (!endLocation || Math.abs(endLocation.lat - lat) > 0.0001 || Math.abs(endLocation.lng - lng) > 0.0001) return;
@@ -284,8 +284,8 @@ function selectStartFromMap(latlng) {
 
 function reverseGeocodeStartLabel(lat, lng) {
   fetch('https://nominatim.openstreetmap.org/reverse?' + new URLSearchParams({
-    format: 'json', lat: String(lat), lon: String(lng), zoom: '18', addressdetails: '1'
-  }), { headers: { 'Accept-Language': 'vi' } })
+    format: 'json', lat: String(lat), lon: String(lng), zoom: '18', addressdetails: '1', 'accept-language': 'vi'
+  }))
     .then(r => r.ok ? r.json() : null)
     .then(d => {
       if (!startLocation || startLocation.lat !== lat || startLocation.lng !== lng) return;
@@ -342,6 +342,43 @@ function handleGpsClick(ev) {
 }
 
 /**
+ * Tìm tọa độ điểm nằm chính giữa một đường polyline cong theo chiều dài thực tế
+ * @param {Array<[number, number]>} coords 
+ * @returns {[number, number]|null} Tọa độ [lat, lng] nằm chính xác trên tim đường
+ */
+function findMidpointOnPolyline(coords) {
+  if (!coords || coords.length === 0) return null;
+  if (coords.length === 1) return coords[0];
+  if (coords.length === 2) {
+    return [(coords[0][0] + coords[1][0]) / 2, (coords[0][1] + coords[1][1]) / 2];
+  }
+
+  let totalLength = 0;
+  const dists = [];
+  const distFn = (typeof window !== 'undefined' && window.distanceMeters) ? window.distanceMeters : _haversineMeters;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const d = distFn(coords[i][0], coords[i][1], coords[i + 1][0], coords[i + 1][1]);
+    dists.push(d);
+    totalLength += d;
+  }
+
+  const targetHalf = totalLength / 2;
+  let accum = 0;
+  for (let i = 0; i < dists.length; i++) {
+    if (accum + dists[i] >= targetHalf) {
+      const remain = targetHalf - accum;
+      const ratio = dists[i] > 0 ? (remain / dists[i]) : 0;
+      return [
+        coords[i][0] + (coords[i + 1][0] - coords[i][0]) * ratio,
+        coords[i][1] + (coords[i + 1][1] - coords[i][1]) * ratio
+      ];
+    }
+    accum += dists[i];
+  }
+  return coords[Math.floor(coords.length / 2)];
+}
+
+/**
  * Vẽ các điểm sự cố giao thông lên LayerGroup trên bản đồ
  */
 function renderIncidents() {
@@ -363,30 +400,119 @@ function renderIncidents() {
     const meta = typesMeta[inc.type] || { emoji: '⚠️', label: 'Sự cố', color: '#e3492c' };
     const markerOpacity = Math.min(1.0, Math.max(0.85, 0.75 + (currentC / 100) * 0.25));
     const confColor = colorFn(currentC);
-    const levelColor = inc.level === 'cao' ? 'var(--risk-high)' : inc.level === 'trungbinh' ? 'var(--risk-mid)' : 'var(--risk-low)';
+
+    // Xác định màu bôi đường theo mức độ nghiêm trọng:
+    // - Mức độ 'cao': Màu ĐỎ (#ef4444)
+    // - Mức độ 'trungbinh' hoặc 'thap': Màu VÀNG (#f59e0b)
+    const isHighSeverity = (inc.level === 'cao');
+    const segmentColor = isHighSeverity ? '#ef4444' : '#f59e0b';
+    const levelColor = isHighSeverity ? 'var(--risk-high)' : (inc.level === 'trungbinh' ? 'var(--risk-mid)' : 'var(--risk-low)');
+    const severityText = isHighSeverity ? 'ĐỎ (Nghiêm trọng)' : (inc.level === 'trungbinh' ? 'VÀNG (Trung bình)' : 'VÀNG (Thấp)');
+
+    // 1. CHỈ VẼ ĐOẠN ĐƯỜNG KHI ĐÃ CÓ HÌNH HỌC TIM ĐƯỜNG THỰC TẾ (roadCoords >= 2 hoặc segmentCoords >= 2)
+    // TUYỆT ĐỐI KHÔNG VẼ ĐƯỜNG THẲNG NỐI TẮT GIỮA 2 NODE
+    const segmentCoords = (inc.roadCoords && inc.roadCoords.length >= 2) 
+      ? inc.roadCoords 
+      : ((inc.segmentCoords && inc.segmentCoords.length >= 2) ? inc.segmentCoords : null);
+    const hasSegment = Boolean(segmentCoords && segmentCoords.length >= 2);
+
+    let roadPolyline = null;
+    if (hasSegment && segmentCoords) {
+      // Lớp phát quang viền rộng bên dưới (Halo Glow)
+      L.polyline(segmentCoords, {
+        color: segmentColor,
+        weight: 14,
+        opacity: 0.35,
+        lineCap: 'round',
+        lineJoin: 'round'
+      }).addTo(incidentLayerGroup);
+
+      // Lớp vạch kẻ chính nổi bật màu Đỏ hoặc Vàng bám sát tim đường
+      roadPolyline = L.polyline(segmentCoords, {
+        color: segmentColor,
+        weight: 7,
+        opacity: 0.95,
+        lineCap: 'round',
+        lineJoin: 'round'
+      }).addTo(incidentLayerGroup);
+
+      roadPolyline.bindTooltip(
+        `<div style="font-weight:700;font-size:12px;color:${segmentColor};">
+          ⚠️ Đoạn đường ${inc.roadName ? '<b>' + esc(inc.roadName) + '</b>: ' : ''}${inc.reporterCount || 2} người báo cáo
+        </div>
+        <div style="font-size:11px;color:#333;">${meta.emoji} ${meta.label} · Mức độ: ${severityText}</div>`,
+        { sticky: true }
+      );
+    }
+
+    // Vẽ các chấm điểm tròn tại mọi node vị trí đã báo cáo
+    if (inc.nodes && inc.nodes.length > 1) {
+      inc.nodes.forEach((node, idx) => {
+        L.circleMarker([node.lat, node.lng], {
+          radius: 5,
+          color: segmentColor,
+          fillColor: '#ffffff',
+          fillOpacity: 1,
+          weight: 3
+        }).addTo(incidentLayerGroup)
+          .bindTooltip(`Điểm báo cáo #${idx + 1}${inc.roadName ? ' (' + esc(inc.roadName) + ')' : ''}`, { direction: 'top' });
+      });
+    } else {
+      L.circleMarker([inc.lat, inc.lng], {
+        radius: 5,
+        color: segmentColor,
+        fillColor: '#ffffff',
+        fillOpacity: 1,
+        weight: 2.5
+      }).addTo(incidentLayerGroup);
+    }
+
+    // 2. VẼ MARKER ĐIỂM SỰ CỐ DẠNG PIN MŨI NHỌN CHỈ THẲNG XUỐNG CON ĐƯỜNG
+    const reporterBadgeHtml = (inc.reporterCount && inc.reporterCount >= 2)
+      ? `<div class="incident-badge-count" style="background:${segmentColor};">${inc.reporterCount} người</div>`
+      : '';
 
     const icon = L.divIcon({
-      className: '',
-      html: `<div class="incident-marker" style="border-color:${meta.color};opacity:${markerOpacity};box-shadow:0 4px 12px ${meta.color}66, 0 3px 8px rgba(0,0,0,0.38);"><span>${meta.emoji}</span></div>`,
-      iconSize: [32, 32],
-      iconAnchor: [16, 30]
+      className: 'incident-marker-container',
+      html: `
+        <div class="incident-pin-wrapper">
+          ${reporterBadgeHtml}
+          <div class="incident-pin-card" style="border-color:${segmentColor};opacity:${markerOpacity};">
+            <span class="incident-pin-emoji">${meta.emoji}</span>
+          </div>
+          <div class="incident-pin-arrow" style="border-top-color:${segmentColor};"></div>
+        </div>`,
+      iconSize: [36, 42],
+      iconAnchor: [18, 40],
+      popupAnchor: [0, -38]
     });
 
-    const marker = L.marker([inc.lat, inc.lng], { icon }).addTo(incidentLayerGroup);
+    let markerLat = inc.lat;
+    let markerLng = inc.lng;
+    if (hasSegment && segmentCoords && segmentCoords.length >= 2) {
+      const midPoint = findMidpointOnPolyline(segmentCoords);
+      if (midPoint) {
+        markerLat = midPoint[0];
+        markerLng = midPoint[1];
+      }
+    }
+    const marker = L.marker([markerLat, markerLng], { icon }).addTo(incidentLayerGroup);
     const popupContent = `
       <div class="popup-box">
         <div class="p-head">${meta.emoji} ${meta.label}</div>
         <div class="confidence-bar"><div class="confidence-fill" style="width:${Math.round(currentC)}%;background:${confColor}"></div></div>
+        <div class="p-row"><span>Tuyến đường</span><b style="color:${segmentColor};font-weight:700;">${esc(inc.roadName || 'Tuyến đường')}</b></div>
         <div class="p-row"><span>Độ tin cậy</span><b style="color:${confColor}">${Math.round(currentC)}%</b></div>
-        <div class="p-row"><span>Báo cáo</span><b>${inc.reporterCount || 1} người</b></div>
+        <div class="p-row"><span>Báo cáo</span><b style="color:${segmentColor};font-weight:700;">${inc.reporterCount || 1} người ${hasSegment ? '(Đã gộp đoạn đường)' : ''}</b></div>
         <div class="p-row"><span>Mô tả</span><b>${esc(inc.desc)}</b></div>
         <div class="p-row"><span>Cập nhật</span><b>${(typeof window.formatRelativeTime === 'function') ? window.formatRelativeTime(inc.lastConfirmedAt || inc.createdAt) : ''}</b></div>
+        <div class="p-row"><span>Màu cảnh báo</span><b style="color:${segmentColor};font-weight:700;">${severityText}</b></div>
         <span class="p-level" style="background:${levelColor}22;color:${levelColor}">
           Mức độ: ${levelsMeta[inc.level] || inc.level}
         </span>
         <div style="margin-top:10px;padding-top:8px;border-top:1px solid #e5e7eb;display:flex;gap:6px;">
           <button style="flex:1;background:var(--primary-light);color:var(--primary-dark);border:1px solid var(--primary);border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" onclick="voteConfirmIncident('${inc.id}')">
-            👍 Xác nhận (+50%)
+            👍 Xác nhận (+30%)
           </button>
           <button style="flex:1;background:#fef2f2;color:#ef4444;border:1px solid #fca5a5;border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" onclick="dismissIncident('${inc.id}')">
             ❌ Hết sự cố
@@ -394,6 +520,9 @@ function renderIncidents() {
         </div>
       </div>`;
     marker.bindPopup(popupContent);
+    if (roadPolyline) {
+      roadPolyline.bindPopup(popupContent);
+    }
   }
 }
 
@@ -404,19 +533,24 @@ function renderNearbyPanel() {
   const listEl = document.getElementById('nearby-list');
   if (!listEl) return;
 
-  if (!startLocation || !isValidCoordinate(startLocation.lat, startLocation.lng)) {
+  if (!startLocation || !_isValidCoordinate(startLocation.lat, startLocation.lng)) {
     listEl.innerHTML = '<div class="np-empty" style="font-size:12px;color:var(--text-muted);padding:4px 0;">Chưa xác định vị trí.</div>';
     return;
   }
 
   const now = Date.now();
   const validNearby = [];
+  const incList = (typeof window !== 'undefined' && window.incidents) ? window.incidents : [];
+  const confFn = (typeof window !== 'undefined' && window.calculateCurrentConfidence) ? window.calculateCurrentConfidence : () => 50;
+  const distFn = (typeof window !== 'undefined' && window.haversineMeters) ? window.haversineMeters : _haversineMeters;
+  const typesMeta = (typeof window !== 'undefined' && window.INCIDENT_TYPES) ? window.INCIDENT_TYPES : _INCIDENT_TYPES;
+  const esc = (typeof window !== 'undefined' && window.escapeHtml) ? window.escapeHtml : _escapeHtml;
 
-  for (const inc of incidents) {
-    const currentC = calculateCurrentConfidence(inc, now);
+  for (const inc of incList) {
+    const currentC = confFn(inc, now);
     if (currentC <= 0.1) continue;
 
-    const distM = haversineMeters(startLocation.lat, startLocation.lng, inc.lat, inc.lng);
+    const distM = distFn(startLocation.lat, startLocation.lng, inc.lat, inc.lng);
     if (distM <= 3000) {
       validNearby.push({ incident: inc, distance: distM });
     }
@@ -432,10 +566,10 @@ function renderNearbyPanel() {
 
   listEl.innerHTML = topNearby.map(item => {
     const inc = item.incident;
-    const meta = INCIDENT_TYPES[inc.type] || { emoji: '⚠️', label: 'Sự cố' };
+    const meta = typesMeta[inc.type] || { emoji: '⚠️', label: 'Sự cố' };
     const distText = item.distance < 1000 ? `${Math.round(item.distance)}m` : `${(item.distance / 1000).toFixed(1)}km`;
     return `<div class="np-item">
-      <span class="np-label">${meta.emoji} ${escapeHtml(meta.label)}</span>
+      <span class="np-label">${meta.emoji} ${esc(meta.label)}</span>
       <span class="np-dist">${distText}</span>
     </div>`;
   }).join('');
