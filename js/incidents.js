@@ -692,40 +692,218 @@ function computeProjectedDistances(lat1, lng1, lat2, lng2, bearingDeg) {
 }
 
 /**
- * Ràng buộc: KIỂM TRA 2 NODE CÓ CÙNG NẰM TRÊN 1 ĐƯỜNG VÀ CÙNG CHIỀU KHÔNG?
- * - Nếu đường 2 chiều mà mỗi chiều 1 node (bearing ngược nhau > 100°): TUYỆT ĐỐI KHÔNG GỘP.
- * - Khác tên đường: TUYỆT ĐỐI KHÔNG GỘP.
+/**
+ * Kiểm tra 2 điểm/sự cố có đủ điều kiện topology để gộp thành 1 cluster hay không (Section 9).
+ * QUY TẮC BẮT BUỘC:
+ * - TOPOLOGY > ROAD/SEGMENT ID > EDGE RELATIONSHIP > LAYER/ELEVATION > GEOMETRY > DISTANCE
+ * - Khoảng cách chỉ là điều kiện cần (candidate generator), KHÔNG PHẢI điều kiện đủ.
+ * - Quy tắc chứng minh dương tính (Positive Proof): Nếu không chứng minh được 2 điểm
+ *   thuộc cùng một con đường/hành lang giao thông hợp lệ -> TUYỆT ĐỐI KHÔNG GỘP.
+ * 
+ * @param {Object} inc - Incident hiện hữu trong hệ thống
+ * @param {Object} data - Dữ liệu báo cáo sự cố mới hoặc incident thứ hai
+ * @param {Object} [context={}] - Ngữ cảnh kiểm tra
+ * @returns {boolean}
  */
-function isSameRoadAndDirection(inc, data) {
-  // Phải cùng loại sự cố (bảo vệ kép)
+function canMergeIncidentNodes(inc, data, context = {}) {
+  if (!inc || !data) return false;
+
+  const distFn = (typeof window !== 'undefined' && window.distanceMeters) ? window.distanceMeters : _distanceMeters;
+
+  // 1. Phải cùng loại sự cố (bảo vệ tuyệt đối)
   if (inc.type && data.type && inc.type !== data.type) {
+    logMergeDebug({
+      roadNameA: inc.roadName,
+      roadNameB: data.roadName,
+      sameRoad: false,
+      merge: false,
+      reason: 'different_incident_type'
+    });
     return false;
   }
 
-  const norm1 = inc.normalizedStreet || normalizeStreetName(inc.roadName);
-  const norm2 = data.normalizedStreet || normalizeStreetName(data.roadName);
-  if (norm1 && norm2) {
-    const match = (norm1 === norm2) || norm1.includes(norm2) || norm2.includes(norm1);
-    if (!match) return false;
+  // 2. Kiểm tra Layer / Elevation / Bridge / Tunnel (Section 10)
+  const layerA = inc.layer != null ? Number(inc.layer) : 0;
+  const layerB = data.layer != null ? Number(data.layer) : 0;
+  if (layerA !== layerB) {
+    logMergeDebug({
+      roadNameA: inc.roadName,
+      roadNameB: data.roadName,
+      sameRoad: false,
+      merge: false,
+      reason: `layer_mismatch (${layerA} vs ${layerB})`
+    });
+    return false;
   }
 
-  // 1. Kiểm tra OSM Way ID và Bearing:
-  if (inc.osmWayId && data.osmWayId && inc.osmWayId !== data.osmWayId) {
-    if (inc.roadBearing != null && data.roadBearing != null) {
-      const angleDiff = bearingAngleDiff(inc.roadBearing, data.roadBearing);
-      if (angleDiff > 100) return false;
+  const bridgeA = Boolean(inc.bridge);
+  const bridgeB = Boolean(data.bridge);
+  if (bridgeA !== bridgeB && (inc.bridge != null || data.bridge != null)) {
+    logMergeDebug({
+      roadNameA: inc.roadName,
+      roadNameB: data.roadName,
+      sameRoad: false,
+      merge: false,
+      reason: 'bridge_mismatch'
+    });
+    return false;
+  }
+
+  const tunnelA = Boolean(inc.tunnel);
+  const tunnelB = Boolean(data.tunnel);
+  if (tunnelA !== tunnelB && (inc.tunnel != null || data.tunnel != null)) {
+    logMergeDebug({
+      roadNameA: inc.roadName,
+      roadNameB: data.roadName,
+      sameRoad: false,
+      merge: false,
+      reason: 'tunnel_mismatch'
+    });
+    return false;
+  }
+
+  // 3. Chuẩn hóa tên đường và kiểm tra xung đột tên đường (Street Name check)
+  const normA = inc.normalizedStreet || normalizeStreetName(inc.roadName);
+  const normB = data.normalizedStreet || normalizeStreetName(data.roadName);
+
+  if (normA && normB) {
+    const isNameMatch = (normA === normB) || normA.includes(normB) || normB.includes(normA);
+    if (!isNameMatch) {
+      logMergeDebug({
+        roadNameA: inc.roadName,
+        roadNameB: data.roadName,
+        sameRoad: false,
+        merge: false,
+        reason: `road_name_mismatch ('${normA}' vs '${normB}')`
+      });
+      return false;
     }
   }
 
-  // 2. Kiểm tra hướng lưu thông (bearing) của con đường tại 2 điểm:
-  if (inc.roadBearing != null && data.roadBearing != null) {
-    const angleDiff = bearingAngleDiff(inc.roadBearing, data.roadBearing);
-    if (angleDiff > 100) {
-      return false; // 2 chiều xe chạy ngược nhau trên đường phân cách
+  // 4. Kiểm tra OSM Way ID và Road ID (Section 7)
+  const wayA = inc.osmWayId ? String(inc.osmWayId) : null;
+  const wayB = data.osmWayId ? String(data.osmWayId) : null;
+  const roadIdA = inc.roadId ? String(inc.roadId) : null;
+  const roadIdB = data.roadId ? String(data.roadId) : null;
+
+  if (roadIdA && roadIdB && roadIdA !== roadIdB) {
+    if (!context.isIntersection && !inc.isIntersection && !data.isIntersection) {
+      logMergeDebug({
+        roadNameA: inc.roadName,
+        roadNameB: data.roadName,
+        sameRoad: false,
+        merge: false,
+        reason: `road_id_mismatch (${roadIdA} vs ${roadIdB})`
+      });
+      return false;
     }
+  }
+
+  // 5. Kiểm tra Bearing / Hướng lưu thông (Section 11)
+  const bearingA = inc.roadBearing != null ? inc.roadBearing : inc.bearing;
+  const bearingB = data.roadBearing != null ? data.roadBearing : data.bearing;
+
+  if (wayA && wayB && wayA !== wayB) {
+    // Khác OSM Way ID: Chỉ cho phép gộp nếu cùng tên đường đã được xác thực
+    // VÀ góc lệch bearing <= 30 độ (đoạn nối tiếp nhau trên cùng con đường)
+    if (!normA || !normB || (normA !== normB && !normA.includes(normB) && !normB.includes(normA))) {
+      logMergeDebug({
+        roadNameA: inc.roadName,
+        roadNameB: data.roadName,
+        osmWayIdA: wayA,
+        osmWayIdB: wayB,
+        sameRoad: false,
+        merge: false,
+        reason: `osm_way_mismatch (${wayA} vs ${wayB})`
+      });
+      return false;
+    }
+
+    if (bearingA != null && bearingB != null && bearingAngleDiff(bearingA, bearingB) > 30) {
+      logMergeDebug({
+        roadNameA: inc.roadName,
+        roadNameB: data.roadName,
+        osmWayIdA: wayA,
+        osmWayIdB: wayB,
+        sameRoad: false,
+        merge: false,
+        reason: `bearing_difference_too_large (${Math.round(bearingAngleDiff(bearingA, bearingB))}deg > 30deg on different OSM ways)`
+      });
+      return false;
+    }
+  }
+
+  if (bearingA != null && bearingB != null) {
+    const diff = bearingAngleDiff(bearingA, bearingB);
+    // Khác bearing > 45 độ: đường vuông góc giao cắt hoặc ngược chiều dải phân cách
+    if (diff > 45 && !context.isIntersection) {
+      logMergeDebug({
+        roadNameA: inc.roadName,
+        roadNameB: data.roadName,
+        sameRoad: false,
+        merge: false,
+        reason: `bearing_difference_too_large (${Math.round(diff)}deg > 45deg)`
+      });
+      return false;
+    }
+  }
+
+  // 6. Kiểm tra khoảng cách ngang (Lateral Distance) tới tim đường của incident (Section 11)
+  const maxLateral = context.maxLateralDistance || 20; // 20m tối đa lệch khỏi hành lang đường
+  if (inc.segmentCoords && inc.segmentCoords.length >= 2 && data.lat != null && data.lng != null) {
+    let minLatDist = Infinity;
+    for (let i = 0; i < inc.segmentCoords.length - 1; i++) {
+      const p1 = inc.segmentCoords[i];
+      const p2 = inc.segmentCoords[i + 1];
+      const proj = projectPointToSegment([data.lat, data.lng], p1, p2);
+      const d = distFn(data.lat, data.lng, proj.pt[0], proj.pt[1]);
+      if (d < minLatDist) minLatDist = d;
+    }
+    if (minLatDist > maxLateral) {
+      logMergeDebug({
+        roadNameA: inc.roadName,
+        roadNameB: data.roadName,
+        sameRoad: false,
+        merge: false,
+        reason: `lateral_distance_exceeded (${Math.round(minLatDist)}m > ${maxLateral}m)`
+      });
+      return false;
+    }
+  }
+
+  // 7. Quy tắc chứng minh dương tính (Positive Proof - Section 5):
+  // Phải có ít nhất 1 bằng chứng xác thực rằng cả 2 thuộc cùng một con đường:
+  // - Cùng osmWayId
+  // - Cùng roadId
+  // - Cùng normalizedStreet đã được xác thực
+  // - Hoặc cùng thuộc 1 edge đã biết trong context
+  const hasProof = Boolean(
+    (wayA && wayB && wayA === wayB) ||
+    (roadIdA && roadIdB && roadIdA === roadIdB) ||
+    (normA && normB && (normA === normB || normA.includes(normB) || normB.includes(normA))) ||
+    context.sameRoadVerified
+  );
+
+  if (!hasProof) {
+    logMergeDebug({
+      roadNameA: inc.roadName,
+      roadNameB: data.roadName,
+      sameRoad: false,
+      merge: false,
+      reason: 'no_positive_proof_same_road'
+    });
+    return false;
   }
 
   return true;
+}
+
+/**
+ * Ràng buộc: KIỂM TRA 2 NODE CÓ CÙNG NẰM TRÊN 1 ĐƯỜNG VÀ CÙNG CHIỀU KHÔNG?
+ * Ủy quyền trực tiếp cho canMergeIncidentNodes để áp dụng chặt chẽ thứ bậc TOPOLOGY.
+ */
+function isSameRoadAndDirection(inc, data, context = {}) {
+  return canMergeIncidentNodes(inc, data, context);
 }
 
 /**
@@ -770,20 +948,31 @@ async function addOrConfirmIncident(data) {
     roadName,
     normalizedStreet: normStreet,
     osmWayId,
+    roadId: data.roadId || null,
+    layer: data.layer != null ? data.layer : 0,
+    elevation: data.elevation != null ? data.elevation : null,
+    bridge: data.bridge === true || data.bridge === 'yes',
+    tunnel: data.tunnel === true || data.tunnel === 'yes',
     roadBearing,
     lat: snappedLat,
     lng: snappedLng,
     type: data.type
   };
 
-  // CHỈ GỘP KHI CÙNG LOẠI SỰ CỐ, CÙNG ĐƯỜNG VÀ THỎA MÃN ĐIỀU KIỆN
+  // CHỈ GỘP KHI CÙNG LOẠI SỰ CỐ, CÙNG ĐƯỜNG VÀ THỎA MÃN TOPOLOGY CHECK
   for (const inc of incidents) {
     const c = calculateCurrentConfidence(inc);
     if (c <= 0) continue;
 
     // 1. CỰC KỲ QUAN TRỌNG: TUYỆT ĐỐI KHÔNG GỘP CÁC LOẠI SỰ CỐ KHÁC NHAU!
-    // Ví dụ: Ngập nước không gộp với tai nạn hay công trình
     if (inc.type !== data.type) {
+      continue;
+    }
+
+    // 2. KIỂM TRA TOPOLOGY TRƯỚC HẾT (Topology > Road/Segment ID > Layer > Geometry > Distance)
+    // Nếu không thỏa mãn topology (khác đường, khác layer, khác bearing, lệch tim đường, không có bằng chứng dương tính)
+    // thì TUYỆT ĐỐI KHÔNG GỘP dù tọa độ có nằm sát nhau.
+    if (!canMergeIncidentNodes(inc, currentPayload, { renderMode })) {
       continue;
     }
 
@@ -823,21 +1012,7 @@ async function addOrConfirmIncident(data) {
         osmWayIdB: osmWayId,
         sameRoad: false,
         merge: false,
-        reason: `Khoảng cách mắt xích (${Math.round(d)}m) vượt quá ngưỡng ${CHAIN_MERGE_DISTANCE_METERS}m`
-      });
-      continue;
-    }
-
-    if (!isSameRoadAndDirection(inc, currentPayload)) {
-      logMergeDebug({
-        distance: d,
-        roadNameA: inc.roadName,
-        roadNameB: roadName,
-        osmWayIdA: inc.osmWayId,
-        osmWayIdB: osmWayId,
-        sameRoad: false,
-        merge: false,
-        reason: `Không cùng tuyến đường hoặc khác chiều lưu thông`
+        reason: `distance_exceeded (${Math.round(d)}m > ${CHAIN_MERGE_DISTANCE_METERS}m)`
       });
       continue;
     }
@@ -1109,8 +1284,32 @@ if (typeof window !== 'undefined') {
   window.findFarthestNodePair = findFarthestNodePair;
   window.fetchSafeRoadSegment = fetchSafeRoadSegment;
   window.isSameRoadAndDirection = isSameRoadAndDirection;
+  window.canMergeIncidentNodes = canMergeIncidentNodes;
   window.sliceRoadBetweenNodes = sliceRoadBetweenNodes;
   window.sliceRoadBetweenSnaps = sliceRoadBetweenSnaps;
   window.buildIncidentRoadSegment = buildIncidentRoadSegment;
   window.logMergeDebug = logMergeDebug;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    calculateCurrentConfidence,
+    getConfidenceColor,
+    cleanupExpiredIncidents,
+    addOrConfirmIncident,
+    voteConfirmIncident,
+    dismissIncident,
+    findFarthestNodePair,
+    fetchSafeRoadSegment,
+    isSameRoadAndDirection,
+    canMergeIncidentNodes,
+    sliceRoadBetweenNodes,
+    sliceRoadBetweenSnaps,
+    buildIncidentRoadSegment,
+    logMergeDebug,
+    extractStreetName,
+    normalizeStreetName,
+    computeBearingDegrees,
+    bearingAngleDiff
+  };
 }
