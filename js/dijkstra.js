@@ -613,28 +613,36 @@
       const prevPath = A[k - 1];
       if (!prevPath || prevPath.nodes.length < 2) break;
 
+      // Tiền tính toán mảng cộng dồn Prefix Cost và Prefix Distance (O(N) một lần thay vì O(N^2) mỗi spur node)
+      const numEdges = prevPath.edges.length;
+      const prefixCost = new Float64Array(numEdges + 1);
+      const prefixDistance = new Array(numEdges + 1);
+      prefixCost[0] = 0;
+      prefixDistance[0] = 0;
+
+      let allDistancesValid = true;
+      for (let eIdx = 0; eIdx < numEdges; eIdx++) {
+        const edge = prevPath.edges[eIdx];
+        prefixCost[eIdx + 1] = prefixCost[eIdx] + getCost(edge);
+
+        if (allDistancesValid && typeof edge.distance === 'number' && Number.isFinite(edge.distance) && edge.distance >= 0) {
+          prefixDistance[eIdx + 1] = prefixDistance[eIdx] + edge.distance;
+        } else {
+          allDistancesValid = false;
+          prefixDistance[eIdx + 1] = null;
+        }
+      }
+
       // Duyệt qua từng node trên prevPath làm spurNode (từ đầu đến kế cuối)
       for (let i = 0; i < prevPath.nodes.length - 1; i++) {
         const spurNode = prevPath.nodes[i];
         const rootPathNodes = prevPath.nodes.slice(0, i + 1);
         const rootPathEdges = prevPath.edges.slice(0, i);
 
-        // Tính chi phí của rootPath
-        let rootCost = 0;
-        let rootDistance = 0;
-        let rootDistanceValid = true;
-
-        for (let r = 0; r < rootPathEdges.length; r++) {
-          const re = rootPathEdges[r];
-          rootCost += getCost(re);
-          if (rootDistanceValid) {
-            if (typeof re.distance === 'number' && Number.isFinite(re.distance) && re.distance >= 0) {
-              rootDistance += re.distance;
-            } else {
-              rootDistanceValid = false;
-            }
-          }
-        }
+        // Truy xuất chi phí và khoảng cách của rootPath trong O(1)
+        const rootCost = prefixCost[i];
+        const rootDistance = prefixDistance[i];
+        const rootDistanceValid = (rootDistance !== null);
 
         // Tập các cạnh bị loại trừ khỏi spurNode để không lặp lại tuyến đã có trong A
         // Hỗ trợ cả edge.id và fallback from->to

@@ -88,6 +88,9 @@ const CONFIG = {
   // Màu sắc phân biệt các tuyến đường trên bản đồ
   route_colors: ['#2f7ee0', '#f08a1c', '#12b76a', '#8a4fe0', '#e3492c'],
 
+  // Số lượng tuyến đường gợi ý tối đa hiển thị trên giao diện (UI suggested routes limit)
+  max_suggested_routes: 3,
+
   // ==============================================================
   // CẤU HÌNH TỐI ƯU HÓA OSRM ROUTING ENGINE
   // ==============================================================
@@ -133,6 +136,7 @@ const OSRM_ENABLE_ALTERNATIVES = CONFIG.osrm_enable_alternatives !== false;
 const OSRM_CANDIDATE_STEPS = CONFIG.osrm_candidate_steps === true;
 const OSRM_FINAL_STEPS = CONFIG.osrm_final_steps !== false;
 const DEBUG_ROUTING = CONFIG.debug_routing === true;
+const MAX_SUGGESTED_ROUTES = CONFIG.max_suggested_routes || 3;
 
 /**
  * Định nghĩa metadata trực quan và renderMode cho từng loại sự cố
@@ -351,6 +355,7 @@ if (typeof window !== 'undefined') {
   window.OSRM_CANDIDATE_STEPS = OSRM_CANDIDATE_STEPS;
   window.OSRM_FINAL_STEPS = OSRM_FINAL_STEPS;
   window.DEBUG_ROUTING = DEBUG_ROUTING;
+  window.MAX_SUGGESTED_ROUTES = MAX_SUGGESTED_ROUTES;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -383,6 +388,7 @@ if (typeof module !== 'undefined' && module.exports) {
     OSRM_ENABLE_ALTERNATIVES,
     OSRM_CANDIDATE_STEPS,
     OSRM_FINAL_STEPS,
-    DEBUG_ROUTING
+    DEBUG_ROUTING,
+    MAX_SUGGESTED_ROUTES
   };
 }

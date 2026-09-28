@@ -511,22 +511,22 @@ async function findSafeRoutes(start, end, options = {}) {
     r.riskScore = calculateRouteRisk(r);
   });
 
-  // Giới hạn số lượng tuyến tối đa (OSRM_MAX_ROUTES)
-  const maxRoutes = (typeof window !== 'undefined' && window.OSRM_MAX_ROUTES) 
-    ? window.OSRM_MAX_ROUTES 
-    : ((typeof CONFIG !== 'undefined' && CONFIG.osrm_max_routes) ? CONFIG.osrm_max_routes : 6);
-
-  if (validRoutes.length > maxRoutes) {
-    const sortedByRisk = [...validRoutes].sort((a, b) => {
-      if (a.riskScore !== b.riskScore) return a.riskScore - b.riskScore;
+  // Sắp xếp các tuyến ứng viên theo thời gian di chuyển (duration) từ nhanh nhất đến chậm hơn
+  // Tuyến nhanh nhất luôn được chọn làm tuyến chính (primary route), các tuyến tiếp theo là tuyến thay thế (alternative routes)
+  validRoutes.sort((a, b) => {
+    if (Math.abs(a.duration - b.duration) > 0.05) {
       return a.duration - b.duration;
-    });
-    const fastest = [...validRoutes].sort((a, b) => a.duration - b.duration)[0];
-    const pool = sortedByRisk.slice(0, maxRoutes - 1);
-    if (!pool.some(r => r === fastest)) {
-      pool.push(fastest);
     }
-    validRoutes = pool;
+    return a.distance - b.distance;
+  });
+
+  // Giới hạn số lượng tuyến gợi ý tối đa cho giao diện (MAX_SUGGESTED_ROUTES = 3)
+  const maxSuggestedRoutes = (typeof window !== 'undefined' && window.MAX_SUGGESTED_ROUTES) 
+    ? window.MAX_SUGGESTED_ROUTES 
+    : ((typeof CONFIG !== 'undefined' && CONFIG.max_suggested_routes) ? CONFIG.max_suggested_routes : 3);
+
+  if (validRoutes.length > maxSuggestedRoutes) {
+    validRoutes = validRoutes.slice(0, maxSuggestedRoutes);
   }
 
   const finalRoutes = validRoutes.map((route, index) => ({
@@ -775,6 +775,165 @@ function renderTransportFallback(fallback, opts = {}) {
 }
 
 /* ---------------------------------------------------------------
+   3b. GEOMETRY METADATA & SPATIAL INDEX CACHE (WEAKMAPS)
+--------------------------------------------------------------- */
+
+/**
+ * WeakMap lưu trữ siêu dữ liệu hình học của tuyến đường (bounding box, buffered bbox, coordinate count, signature).
+ * Tự động giải phóng bộ nhớ khi route bị Garbage Collector thu hồi, chống memory leak.
+ * @type {WeakMap<object, { bbox: number[], bufferedBbox: number[], coordCount: number, segmentCount: number, sig: string }>}
+ */
+const _routeMetadataCache = new WeakMap();
+
+/**
+ * WeakMap lưu trữ Bounding Box bao phủ của sự cố và các nút liên kết (nodes, roadCoords).
+ * @type {WeakMap<object, number[]>}
+ */
+const _incidentBboxCache = new WeakMap();
+
+/**
+ * Lấy chữ ký hình học (Geometry Signature) bằng cách lấy mẫu 15 điểm đều nhau dọc theo polyline,
+ * làm tròn 3 chữ số thập phân (~100m) để nhận diện các tuyến đường đi cùng một hành lang.
+ */
+function _getRouteGeometrySignature(coords, sampleCount = 15) {
+  if (!coords || coords.length === 0) return '';
+  const len = coords.length;
+  if (len <= sampleCount) {
+    return coords.map(p => `${Number(p[0]).toFixed(3)},${Number(p[1]).toFixed(3)}`).join('|');
+  }
+  const samples = [];
+  const step = (len - 1) / (sampleCount - 1);
+  for (let i = 0; i < sampleCount; i++) {
+    const idx = Math.min(len - 1, Math.round(i * step));
+    const p = coords[idx];
+    samples.push(`${Number(p[0]).toFixed(3)},${Number(p[1]).toFixed(3)}`);
+  }
+  return samples.join('|');
+}
+
+/**
+ * Trích xuất và cache siêu dữ liệu hình học của tuyến đường trong WeakMap:
+ * - bbox: [minLat, maxLat, minLng, maxLng]
+ * - bufferedBbox: bbox mở rộng thêm 600m đệm (~0.0055 độ) để lọc nhanh sự cố
+ * - coordCount: số lượng đỉnh
+ * - segmentCount: số lượng phân đoạn
+ * - sig: chữ ký hình học 15 mẫu
+ */
+function getRouteMetadata(route) {
+  if (!route || typeof route !== 'object') return null;
+  const cached = _routeMetadataCache.get(route);
+  if (cached) return cached;
+
+  const coords = route.coords;
+  if (!coords || !Array.isArray(coords) || coords.length === 0) {
+    const emptyMeta = {
+      bbox: null,
+      bufferedBbox: null,
+      coordCount: 0,
+      segmentCount: 0,
+      sig: ''
+    };
+    _routeMetadataCache.set(route, emptyMeta);
+    return emptyMeta;
+  }
+
+  let minLat = Infinity, maxLat = -Infinity;
+  let minLng = Infinity, maxLng = -Infinity;
+  const len = coords.length;
+
+  for (let i = 0; i < len; i++) {
+    const p = coords[i];
+    const lat = p[0];
+    const lng = p[1];
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+  }
+
+  // Vùng đệm 600m: 1 độ vĩ ≈ 111.13km -> 600m ≈ 0.0055°
+  // Đảm bảo mọi điểm ngoài bufferedBbox đều có khoảng cách tối thiểu > 600m đến polyline,
+  // vượt xa ngưỡng ảnh hưởng rủi ro tối đa (300m / 350m).
+  const midLat = (minLat + maxLat) / 2;
+  const latBuf = 0.0055;
+  const cosLat = Math.cos(midLat * Math.PI / 180);
+  const lngBuf = 0.0055 / (cosLat > 0.1 ? cosLat : 1.0);
+
+  const bbox = [minLat, maxLat, minLng, maxLng];
+  const bufferedBbox = [
+    minLat - latBuf,
+    maxLat + latBuf,
+    minLng - lngBuf,
+    maxLng + lngBuf
+  ];
+
+  const meta = {
+    bbox,
+    bufferedBbox,
+    coordCount: len,
+    segmentCount: Math.max(0, len - 1),
+    sig: route._sig || _getRouteGeometrySignature(coords)
+  };
+  if (!route._sig) route._sig = meta.sig;
+
+  _routeMetadataCache.set(route, meta);
+  return meta;
+}
+
+/**
+ * Trích xuất và cache Bounding Box của một sự cố (bao gồm cả các node liên kết và roadCoords)
+ */
+function getIncidentBbox(inc) {
+  if (!inc || typeof inc !== 'object') return null;
+  const cached = _incidentBboxCache.get(inc);
+  if (cached) return cached;
+
+  let minLat = inc.lat, maxLat = inc.lat;
+  let minLng = inc.lng, maxLng = inc.lng;
+
+  if (inc.nodes && Array.isArray(inc.nodes)) {
+    for (let i = 0; i < inc.nodes.length; i++) {
+      const n = inc.nodes[i];
+      if (n && typeof n.lat === 'number' && typeof n.lng === 'number') {
+        if (n.lat < minLat) minLat = n.lat;
+        if (n.lat > maxLat) maxLat = n.lat;
+        if (n.lng < minLng) minLng = n.lng;
+        if (n.lng > maxLng) maxLng = n.lng;
+      }
+    }
+  }
+
+  if (inc.roadCoords && Array.isArray(inc.roadCoords)) {
+    for (let i = 0; i < inc.roadCoords.length; i++) {
+      const pt = inc.roadCoords[i];
+      if (pt && pt.length >= 2) {
+        if (pt[0] < minLat) minLat = pt[0];
+        if (pt[0] > maxLat) maxLat = pt[0];
+        if (pt[1] < minLng) minLng = pt[1];
+        if (pt[1] > maxLng) maxLng = pt[1];
+      }
+    }
+  }
+
+  const bbox = [minLat, maxLat, minLng, maxLng];
+  _incidentBboxCache.set(inc, bbox);
+  return bbox;
+}
+
+/**
+ * Kiểm tra xem Bounding Box của sự cố có giao với vùng đệm buffered Bbox của route không (O(1)).
+ * Nếu không giao nhau, sự cố chắc chắn cách polyline > 600m, an toàn loại bỏ 100% không làm sai lệch rủi ro.
+ */
+function isIncidentNearRouteBbox(incBbox, routeBufferedBbox) {
+  if (!incBbox || !routeBufferedBbox) return true;
+  // incBbox: [iMinLat, iMaxLat, iMinLng, iMaxLng]
+  // routeBufferedBbox: [rMinLat, rMaxLat, rMinLng, rMaxLng]
+  if (incBbox[1] < routeBufferedBbox[0] || incBbox[0] > routeBufferedBbox[1]) return false;
+  if (incBbox[3] < routeBufferedBbox[2] || incBbox[2] > routeBufferedBbox[3]) return false;
+  return true;
+}
+
+/* ---------------------------------------------------------------
    4. CHẤM ĐIỂM RỦI RO & SẮP XẾP TUYẾN
 --------------------------------------------------------------- */
 function calculateRouteRisk(route) {
@@ -784,9 +943,19 @@ function calculateRouteRisk(route) {
   const minDistFn = (typeof window !== 'undefined' && window.minDistanceToPolyline) ? window.minDistanceToPolyline : (typeof minDistanceToPolyline === 'function' ? minDistanceToPolyline : _minDistanceToPolyline);
   const now = Date.now();
 
+  const meta = getRouteMetadata(route);
+  const routeBufferedBbox = meta ? meta.bufferedBbox : null;
+
   for (const inc of incList) {
     const c = confFn(inc, now);
     if (c <= 0) continue;
+
+    // Spatial prefilter: Bỏ qua các sự cố có bounding box nằm hoàn toàn ngoài vùng đệm 600m của route
+    if (routeBufferedBbox) {
+      const incBbox = getIncidentBbox(inc);
+      if (!isIncidentNearRouteBbox(incBbox, routeBufferedBbox)) continue;
+    }
+
     let distM = minDistFn(inc.lat, inc.lng, route.coords);
     if (inc.nodes && inc.nodes.length > 0) {
       for (const node of inc.nodes) {
@@ -801,24 +970,35 @@ function calculateRouteRisk(route) {
       }
     }
 
+    // Nếu khoảng cách vượt ngưỡng ảnh hưởng tối đa (MEDIUM_THRESHOLD_M = 300m), bỏ qua ngay
+    // Không cần tính directional bearing scan vô ích!
+    if (distM >= RISK_IMPACT.MEDIUM_THRESHOLD_M) continue;
+
     // Nếu sự cố xảy ra ở chiều xe chạy ngược lại trên đường 2 chiều (bên kia dải phân cách/đường đối diện):
     // Phân tích góc hướng phương vị của tuyến đường tại vị trí gần sự cố nhất
     let directionalFactor = 1.0;
     if (inc.roadBearing != null && route.coords && route.coords.length >= 2) {
       let nearestRouteIdx = 0;
-      let minD = Infinity;
+      let minSqDist = Infinity;
       const refLat = inc.lat;
       const refLng = inc.lng;
-      for (let k = 0; k < route.coords.length; k++) {
-        const dK = Math.hypot(route.coords[k][0] - refLat, route.coords[k][1] - refLng);
-        if (dK < minD) { minD = dK; nearestRouteIdx = k; }
+      const rCoords = route.coords;
+      const rLen = rCoords.length;
+      for (let k = 0; k < rLen; k++) {
+        const dLat = rCoords[k][0] - refLat;
+        const dLng = rCoords[k][1] - refLng;
+        const sqDist = dLat * dLat + dLng * dLng;
+        if (sqDist < minSqDist) {
+          minSqDist = sqDist;
+          nearestRouteIdx = k;
+        }
       }
-      let nextIdx = Math.min(route.coords.length - 1, nearestRouteIdx + 1);
+      let nextIdx = Math.min(rLen - 1, nearestRouteIdx + 1);
       if (nextIdx === nearestRouteIdx && nearestRouteIdx > 0) nextIdx = nearestRouteIdx - 1;
       if (nextIdx !== nearestRouteIdx) {
         const rBearing = _bearingRad(
-          route.coords[nearestRouteIdx][0], route.coords[nearestRouteIdx][1],
-          route.coords[nextIdx][0], route.coords[nextIdx][1]
+          rCoords[nearestRouteIdx][0], rCoords[nearestRouteIdx][1],
+          rCoords[nextIdx][0], rCoords[nextIdx][1]
         ) * 180 / Math.PI;
         const normRBearing = (rBearing + 360) % 360;
         let diff = Math.abs(normRBearing - inc.roadBearing) % 360;
@@ -855,9 +1035,19 @@ function findIncidentsAlongRoute(route) {
     : (typeof minDistanceToPolyline === 'function' ? minDistanceToPolyline : _minDistanceToPolyline);
   const now = Date.now();
 
+  const meta = getRouteMetadata(route);
+  const routeBufferedBbox = meta ? meta.bufferedBbox : null;
+
   for (const inc of incList) {
     const c = confFn(inc, now);
     if (c <= 0.1) continue;
+
+    // Spatial prefilter: Bỏ qua sự cố nằm ngoài vùng đệm của route
+    if (routeBufferedBbox) {
+      const incBbox = getIncidentBbox(inc);
+      if (!isIncidentNearRouteBbox(incBbox, routeBufferedBbox)) continue;
+    }
+
     let distM = minDistFn(inc.lat, inc.lng, route.coords);
     if (inc.nodes && inc.nodes.length > 0) {
       for (const node of inc.nodes) {
@@ -998,55 +1188,67 @@ function _clusterIncidents(activeIncidents) {
 }
 
 /**
- * Lấy chữ ký hình học (Geometry Signature) bằng cách lấy mẫu 15 điểm đều nhau dọc theo polyline,
- * làm tròn 3 chữ số thập phân (~100m) để nhận diện các tuyến đường đi cùng một hành lang.
- */
-function _getRouteGeometrySignature(coords, sampleCount = 15) {
-  if (!coords || coords.length === 0) return '';
-  const len = coords.length;
-  if (len <= sampleCount) {
-    return coords.map(p => `${Number(p[0]).toFixed(3)},${Number(p[1]).toFixed(3)}`).join('|');
-  }
-  const samples = [];
-  const step = (len - 1) / (sampleCount - 1);
-  for (let i = 0; i < sampleCount; i++) {
-    const idx = Math.min(len - 1, Math.round(i * step));
-    const p = coords[idx];
-    samples.push(`${Number(p[0]).toFixed(3)},${Number(p[1]).toFixed(3)}`);
-  }
-  return samples.join('|');
-}
-
-/**
  * Kiểm tra xem hai tuyến đường có trùng lặp về mặt bản chất hình học không:
- * 1. Khớp hoàn toàn Geometry Signature.
- * 2. Hoặc sai lệch khoảng cách & thời gian < 2% VÀ độ tương đồng hình học > 85%.
+ * Tối ưu hóa đa tầng với Cheap Checks trước:
+ * 1. Khớp hoàn toàn địa chỉ tham chiếu (r1 === r2)
+ * 2. Khớp Geometry Signature (O(1) so sánh chuỗi đã cache trong WeakMap)
+ * 3. Chênh lệch quãng đường hoặc thời gian > 2% -> chắc chắn khác nhau (O(1))
+ * 4. Bounding box không giao nhau trong phạm vi sai số -> chắc chắn khác nhau (O(1))
+ * 5. Chỉ khi vượt qua toàn bộ cheap checks mới lấy mẫu 10 điểm để tính minDistanceToPolyline (kèm early exit)
  */
 function _areRoutesDuplicate(r1, r2) {
   if (!r1 || !r2) return false;
-  const sig1 = r1._sig || (r1._sig = _getRouteGeometrySignature(r1.coords));
-  const sig2 = r2._sig || (r2._sig = _getRouteGeometrySignature(r2.coords));
+  if (r1 === r2) return true;
+
+  const meta1 = getRouteMetadata(r1);
+  const meta2 = getRouteMetadata(r2);
+
+  const sig1 = meta1 ? meta1.sig : (r1._sig || _getRouteGeometrySignature(r1.coords));
+  const sig2 = meta2 ? meta2.sig : (r2._sig || _getRouteGeometrySignature(r2.coords));
   if (sig1 && sig2 && sig1 === sig2) return true;
 
+  // Cheap Check 1: Chênh lệch cự ly & thời gian > 2% -> không thể là trùng lặp
   const distDiff = Math.abs(r1.distance - r2.distance) / Math.max(r1.distance, 0.01);
   const durDiff = Math.abs(r1.duration - r2.duration) / Math.max(r1.duration, 0.01);
+  if (distDiff >= 0.02 || durDiff >= 0.02) return false;
 
-  if (distDiff < 0.02 && durDiff < 0.02) {
-    const c1 = r1.coords;
-    const c2 = r2.coords;
-    if (c1 && c2 && c1.length > 5 && c2.length > 5) {
-      let matchedCount = 0;
-      const testSamples = 10;
-      const step = (c1.length - 1) / (testSamples - 1);
-      for (let i = 0; i < testSamples; i++) {
-        const idx = Math.min(c1.length - 1, Math.round(i * step));
-        const p = c1[idx];
-        const minD = minDistanceToPolyline(p[0], p[1], c2);
-        if (minD < 50) matchedCount++;
+  // Cheap Check 2: Bounding box non-overlap check (với dung sai 0.001 độ ~ 110m)
+  if (meta1 && meta2 && meta1.bbox && meta2.bbox) {
+    const b1 = meta1.bbox;
+    const b2 = meta2.bbox;
+    const tol = 0.001;
+    if (b1[1] + tol < b2[0] || b2[1] + tol < b1[0] ||
+        b1[3] + tol < b2[2] || b2[3] + tol < b1[2]) {
+      return false;
+    }
+  }
+
+  // Expensive Check: Lấy mẫu 10 điểm dọc theo c1 để đo khoảng cách vuông góc tới c2
+  const c1 = r1.coords;
+  const c2 = r2.coords;
+  if (c1 && c2 && c1.length > 5 && c2.length > 5) {
+    let matchedCount = 0;
+    const testSamples = 10;
+    const step = (c1.length - 1) / (testSamples - 1);
+    const minDistFn = (typeof window !== 'undefined' && window.minDistanceToPolyline)
+      ? window.minDistanceToPolyline
+      : (typeof minDistanceToPolyline === 'function' ? minDistanceToPolyline : _minDistanceToPolyline);
+
+    for (let i = 0; i < testSamples; i++) {
+      const idx = Math.min(c1.length - 1, Math.round(i * step));
+      const p = c1[idx];
+      const minD = minDistFn(p[0], p[1], c2);
+      if (minD < 50) {
+        matchedCount++;
+      } else {
+        // Early break: Nếu số điểm không khớp vượt quá 1 (tức tối đa chỉ đạt 8/10 = 80% < 85%),
+        // thì không thể đạt ngưỡng 85% -> dừng sớm ngay lập tức!
+        const unmatched = (i + 1) - matchedCount;
+        if (unmatched > 1) return false;
       }
-      if (matchedCount / testSamples >= 0.85) {
-        return true;
-      }
+    }
+    if (matchedCount / testSamples >= 0.85) {
+      return true;
     }
   }
 
@@ -1057,9 +1259,17 @@ function _areRoutesDuplicate(r1, r2) {
  * Loại bỏ các tuyến trùng lặp thông minh dựa trên Geometry Signature & Sai số dung sai
  */
 function _deduplicateRoutes(routes) {
+  if (!Array.isArray(routes) || routes.length <= 1) return routes || [];
   const unique = [];
-  for (const r of routes) {
-    const isDup = unique.some(u => _areRoutesDuplicate(u, r));
+  for (let i = 0; i < routes.length; i++) {
+    const r = routes[i];
+    let isDup = false;
+    for (let j = 0; j < unique.length; j++) {
+      if (_areRoutesDuplicate(unique[j], r)) {
+        isDup = true;
+        break;
+      }
+    }
     if (!isDup) unique.push(r);
   }
   return unique;
@@ -1139,9 +1349,23 @@ async function _generateAvoidanceRoutes(start, end, baseRoutes, signal = null, m
 
   // Tìm tất cả sự cố có hiệu lực nằm gần các tuyến đường cơ bản
   const activeIncidents = [];
+  const baseMetas = baseRoutes.map(r => getRouteMetadata(r));
   for (const inc of incList) {
     const c = confFn(inc, now);
     if (c <= 0) continue;
+
+    // Spatial prefilter: Bỏ qua nếu sự cố nằm hoàn toàn ngoài vùng đệm 600m của TẤT CẢ các baseRoutes
+    const incBbox = getIncidentBbox(inc);
+    let couldBeNearAny = false;
+    for (let k = 0; k < baseMetas.length; k++) {
+      const m = baseMetas[k];
+      if (!m || !m.bufferedBbox || isIncidentNearRouteBbox(incBbox, m.bufferedBbox)) {
+        couldBeNearAny = true;
+        break;
+      }
+    }
+    if (!couldBeNearAny) continue;
+
     let minD = Infinity;
     for (const r of baseRoutes) {
       const d = minDistFn(inc.lat, inc.lng, r.coords);
@@ -1296,7 +1520,7 @@ function sortRoutesByMode(routes, mode) {
       if (Math.abs(a.duration - b.duration) > 0.05) {
         return a.duration - b.duration;
       }
-      return a.riskScore - b.riskScore;
+      return a.distance - b.distance;
     });
   }
 
@@ -1479,9 +1703,11 @@ function switchToSaferMode(targetMode) {
 function renderRoutes(routes, mode) {
   if (transportFallbackLayerGroup) transportFallbackLayerGroup.clearLayers();
   if (!routeLayerGroup) return;
-  routeLayerGroup.clearLayers();
+  const maxSuggestedRoutes = (typeof window !== 'undefined' && window.MAX_SUGGESTED_ROUTES) 
+    ? window.MAX_SUGGESTED_ROUTES 
+    : ((typeof CONFIG !== 'undefined' && CONFIG.max_suggested_routes) ? CONFIG.max_suggested_routes : 3);
 
-  const sorted = sortRoutesByMode(routes, mode);
+  const sorted = sortRoutesByMode(routes, mode).slice(0, maxSuggestedRoutes);
   const bounds = [];
 
   // Tự động chuyển tuyến được chọn sang tuyến tối ưu của chế độ mới (sorted[0])
@@ -1658,6 +1884,16 @@ if (typeof window !== 'undefined') {
   window.mapConcurrent = mapConcurrent;
   window._scoreAvoidanceWaypoint = _scoreAvoidanceWaypoint;
   window.clearRouteCache = () => osrmRouteCache.clear();
+
+  // Exports phục vụ Geometry, Risk & Deduplication Optimization
+  window._routeMetadataCache = _routeMetadataCache;
+  window._incidentBboxCache = _incidentBboxCache;
+  window.getRouteMetadata = getRouteMetadata;
+  window.getIncidentBbox = getIncidentBbox;
+  window.isIncidentNearRouteBbox = isIncidentNearRouteBbox;
+  window._getRouteGeometrySignature = _getRouteGeometrySignature;
+  window._areRoutesDuplicate = _areRoutesDuplicate;
+  window._deduplicateRoutes = _deduplicateRoutes;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -1680,6 +1916,14 @@ if (typeof module !== 'undefined' && module.exports) {
     fetchOsrmRawRoute,
     mapConcurrent,
     _scoreAvoidanceWaypoint,
-    clearRouteCache: () => osrmRouteCache.clear()
+    clearRouteCache: () => osrmRouteCache.clear(),
+    _routeMetadataCache,
+    _incidentBboxCache,
+    getRouteMetadata,
+    getIncidentBbox,
+    isIncidentNearRouteBbox,
+    _getRouteGeometrySignature,
+    _areRoutesDuplicate,
+    _deduplicateRoutes
   };
 }

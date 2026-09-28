@@ -1,11 +1,12 @@
 /**
- * Test Suite: Independent Dijkstra & K-Shortest Paths Engine
+ * Test Suite: Independent Dijkstra & K-Shortest Paths Engine & Route Suggestion Selection
  * File: tests/test_dijkstra.js
  * 
  * To run: node tests/test_dijkstra.js
  */
 
 const { PriorityQueue, dijkstra, kShortestPaths, calculateRouteOverlap, getEdgeIdentifier } = require('../js/dijkstra.js');
+const { CONFIG, MAX_SUGGESTED_ROUTES } = require('../js/config.js');
 
 let totalTests = 0;
 let passedTests = 0;
@@ -27,7 +28,7 @@ function assertDeepEqual(actual, expected, message) {
 }
 
 console.log('================================================================');
-console.log('BẮT ĐẦU KIỂM THỬ ĐỘC LẬP DIJKSTRA & K-SHORTEST PATHS ENGINE');
+console.log('BẮT ĐẦU KIỂM THỬ ĐỘC LẬP DIJKSTRA & K-SHORTEST & ROUTE SUGGESTION');
 console.log('================================================================\n');
 
 /* ------------------------------------------------------------------
@@ -109,12 +110,12 @@ console.log('\n--- Test Group 2: Dijkstra trên Mock Graph 1 (Prompt Section 23)
 }
 
 /* ------------------------------------------------------------------
-   TEST GROUP 3: TÁCH BIỆT HOÀN TOÀN COST VÀ DISTANCE (MỤC 10)
-   Ví dụ: edge có cost = 12 (ví dụ thời gian), distance = 1000m
+   TEST GROUP 3: TÁCH BIỆT HOÀN TOÀN COST VÀ DISTANCE (MỤC A3)
+   Ví dụ: edge có cost = 12 (thời gian), distance = 1000m
    Kết quả: cost = 12, distance = 1000m. TUYỆT ĐỐI KHÔNG distance = 12.
    Nếu edge không có distance: distance = null.
 ------------------------------------------------------------------ */
-console.log('\n--- Test Group 3: Tách biệt hoàn toàn Cost và Distance (Prompt Section 10) ---');
+console.log('\n--- Test Group 3: Tách biệt hoàn toàn Cost và Distance (Prompt Section A3) ---');
 {
   const mixedGraph = {
     getOutgoingEdges(u) {
@@ -146,12 +147,12 @@ console.log('\n--- Test Group 3: Tách biệt hoàn toàn Cost và Distance (Pro
 }
 
 /* ------------------------------------------------------------------
-   TEST GROUP 4: HỖ TRỢ EDGE.ID VÀ ĐA CẠNH (PARALLEL EDGES - MỤC 13)
+   TEST GROUP 4: HỖ TRỢ EDGE.ID VÀ ĐA CẠNH (PARALLEL EDGES - MỤC A5)
    A có 2 cạnh song song đến B:
-   - edge1: id 'lane_fast', cost = 10
-   - edge2: id 'lane_slow', cost = 15
+   - edge1: id 'edge_fast', cost = 10
+   - edge2: id 'edge_scenic', cost = 15
 ------------------------------------------------------------------ */
-console.log('\n--- Test Group 4: Hỗ trợ edge.id và Đa cạnh song song (Prompt Section 13) ---');
+console.log('\n--- Test Group 4: Hỗ trợ edge.id và Đa cạnh song song (Prompt Section A5) ---');
 {
   const parallelGraph = {
     adj: {
@@ -182,9 +183,9 @@ console.log('\n--- Test Group 4: Hỗ trợ edge.id và Đa cạnh song song (Pr
 }
 
 /* ------------------------------------------------------------------
-   TEST GROUP 5: START === DESTINATION (MỤC 15 & 17)
+   TEST GROUP 5: START === DESTINATION (MỤC A8)
 ------------------------------------------------------------------ */
-console.log('\n--- Test Group 5: Start === Destination (Prompt Section 15 & 17) ---');
+console.log('\n--- Test Group 5: Start === Destination (Prompt Section A8) ---');
 {
   const dummyGraph = { getOutgoingEdges: () => [] };
   const res = dijkstra(dummyGraph, 'A', 'A');
@@ -197,11 +198,11 @@ console.log('\n--- Test Group 5: Start === Destination (Prompt Section 15 & 17) 
 }
 
 /* ------------------------------------------------------------------
-   TEST GROUP 6: ĐỒ THỊ KHÔNG LIÊN THÔNG (MỤC 16 & 26)
+   TEST GROUP 6: ĐỒ THỊ KHÔNG LIÊN THÔNG (MỤC A8)
    A -> B -> C     X -> Y -> Z
    Query: A -> Z
 ------------------------------------------------------------------ */
-console.log('\n--- Test Group 6: Đồ thị không liên thông (Prompt Section 26) ---');
+console.log('\n--- Test Group 6: Đồ thị không liên thông (Prompt Section A8) ---');
 {
   const disconnectedGraph = {
     edges: {
@@ -226,9 +227,9 @@ console.log('\n--- Test Group 6: Đồ thị không liên thông (Prompt Section
 }
 
 /* ------------------------------------------------------------------
-   TEST GROUP 7: CẠNH CÓ CHI PHÍ BẰNG 0 & PHÁT HIỆN CHI PHÍ ÂM / NaN (MỤC 18, 27, 28)
+   TEST GROUP 7: CẠNH COST=0, PHÁT HIỆN CHI PHÍ ÂM / NaN / INFINITY (MỤC A8)
 ------------------------------------------------------------------ */
-console.log('\n--- Test Group 7: Cạnh cost=0 & Phát hiện Chi phí Âm / NaN / Infinity (Prompt Section 18, 27, 28) ---');
+console.log('\n--- Test Group 7: Cạnh cost=0 & Phát hiện Chi phí Âm / NaN / Infinity (Prompt Section A8) ---');
 {
   // Cạnh cost = 0 hợp lệ
   const zeroGraph = {
@@ -275,9 +276,9 @@ console.log('\n--- Test Group 7: Cạnh cost=0 & Phát hiện Chi phí Âm / NaN
 }
 
 /* ------------------------------------------------------------------
-   TEST GROUP 8: BẤT BIẾN CỦA ĐỒ THỊ & TÁI SỬ DỤNG (MỤC 12, 14, 15, 29)
+   TEST GROUP 8: BẤT BIẾN CỦA ĐỒ THỊ & KHÔNG CLONE GRAPH (MỤC A6 & A7)
 ------------------------------------------------------------------ */
-console.log('\n--- Test Group 8: Graph Immutability & Không Clone Graph (Prompt Section 14, 15, 29) ---');
+console.log('\n--- Test Group 8: Graph Immutability & Không Clone Graph (Prompt Section A6 & A7) ---');
 {
   const reusableGraph = {
     adjacency: {
@@ -307,15 +308,9 @@ console.log('\n--- Test Group 8: Graph Immutability & Không Clone Graph (Prompt
 }
 
 /* ------------------------------------------------------------------
-   TEST GROUP 9: YEN\'S K-SHORTEST PATHS VỚI MIN-HEAP CANDIDATE POOL (MỤC 6, 7, 12, 24, 25)
-   Đồ thị đa đường đi (5 đường khả dĩ từ S -> E):
-   Tuyến 1: S -> A -> E (cost: 2 + 3 = 5)
-   Tuyến 2: S -> B -> E (cost: 3 + 4 = 7)
-   Tuyến 3: S -> A -> C -> E (cost: 2 + 2 + 4 = 8)
-   Tuyến 4: S -> B -> C -> E (cost: 3 + 2 + 4 = 9)
-   Tuyến 5: S -> D -> E (cost: 6 + 6 = 12)
+   TEST GROUP 9: YEN\'S K-SHORTEST PATHS VỚI MIN-HEAP & PREFIX CALCULATIONS (MỤC A1, A2, A4)
 ------------------------------------------------------------------ */
-console.log('\n--- Test Group 9: Yen\'s K-Shortest Paths với Min-Heap Candidate Pool (Prompt Section 12, 24, 25) ---');
+console.log('\n--- Test Group 9: Yen\'s K-Shortest Paths với Prefix Cost & Distance (Prompt Section A1, A2, A4) ---');
 {
   const multiPathGraph = {
     adj: {
@@ -385,10 +380,86 @@ console.log('\n--- Test Group 9: Yen\'s K-Shortest Paths với Min-Heap Candidat
 }
 
 /* ------------------------------------------------------------------
-   TEST GROUP 10: HIỆU NĂNG & ĐỘ PHỨC TẠP VỚI MIN-HEAP (MỤC 26 & 30)
-   Sinh đồ thị lưới 1,024 node (32x32) và 3,000 cạnh
+   TEST GROUP 10: KIỂM THỬ GIỚI HẠN TỐI ĐA 3 TUYẾN GỢI Ý (PHẦN B)
 ------------------------------------------------------------------ */
-console.log('\n--- Test Group 10: Hiệu năng trên đồ thị 1,024 node (Prompt Section 26 & 30) ---');
+console.log('\n--- Test Group 10: Tuyến Gợi Ý Tối Đa 3 Tuyến Nhanh Nhất (Prompt Section B & E) ---');
+{
+  assert(MAX_SUGGESTED_ROUTES === 3, 'MAX_SUGGESTED_ROUTES trong config = 3');
+
+  function simulateSelectTopRoutes(candidateRoutes, limit = MAX_SUGGESTED_ROUTES) {
+    // Sắp xếp theo duration tăng dần (nhanh nhất trước), tie-breaker distance
+    const sorted = [...candidateRoutes].sort((a, b) => {
+      if (Math.abs(a.duration - b.duration) > 0.05) {
+        return a.duration - b.duration;
+      }
+      return a.distance - b.distance;
+    });
+    return sorted.slice(0, limit);
+  }
+
+  // 1 route -> 1
+  const r1 = [{ id: 'A', duration: 15, distance: 5 }];
+  assert(simulateSelectTopRoutes(r1).length === 1, '1 route input -> đúng 1 route output');
+
+  // 2 routes -> 2
+  const r2 = [{ id: 'A', duration: 15, distance: 5 }, { id: 'B', duration: 20, distance: 7 }];
+  assert(simulateSelectTopRoutes(r2).length === 2, '2 routes input -> đúng 2 routes output');
+
+  // 3 routes -> 3
+  const r3 = [
+    { id: 'A', duration: 15, distance: 5 },
+    { id: 'B', duration: 12, distance: 4 },
+    { id: 'C', duration: 18, distance: 6 }
+  ];
+  const out3 = simulateSelectTopRoutes(r3);
+  assert(out3.length === 3, '3 routes input -> đúng 3 routes output');
+  assert(out3[0].id === 'B' && out3[1].id === 'A' && out3[2].id === 'C', 'Sắp xếp đúng nhanh nhất: B (12m) -> A (15m) -> C (18m)');
+
+  // 4 routes -> 3
+  const r4 = [
+    { id: 'A', duration: 20, distance: 5 },
+    { id: 'B', duration: 12, distance: 4 },
+    { id: 'C', duration: 17, distance: 6 },
+    { id: 'D', duration: 14, distance: 5 }
+  ];
+  assert(simulateSelectTopRoutes(r4).length === 3, '4 routes input -> chỉ giữ 3 routes nhanh nhất');
+
+  // 5 routes -> 3 (TEST SORT THEO MỤC E)
+  // Input: A = 20 min, B = 12 min, C = 17 min, D = 14 min, E = 25 min
+  // Expected: B (12), D (14), C (17)
+  const r5 = [
+    { id: 'A', duration: 20, distance: 8 },
+    { id: 'B', duration: 12, distance: 5 },
+    { id: 'C', duration: 17, distance: 6 },
+    { id: 'D', duration: 14, distance: 6 },
+    { id: 'E', duration: 25, distance: 10 }
+  ];
+  const out5 = simulateSelectTopRoutes(r5);
+  assert(out5.length === 3, '5 routes input -> chỉ giữ 3 routes');
+  assertDeepEqual(out5.map(r => r.id), ['B', 'D', 'C'], 'Thứ tự chính xác: B (12 min) -> D (14 min) -> C (17 min)');
+
+  // 10 routes -> 3
+  const r10 = Array.from({ length: 10 }, (_, i) => ({ id: `R${i}`, duration: 30 - i, distance: 10 }));
+  const out10 = simulateSelectTopRoutes(r10);
+  assert(out10.length === 3, '10 routes input -> chỉ giữ tối đa 3 routes');
+  assert(out10[0].duration <= out10[1].duration && out10[1].duration <= out10[2].duration, 'Top 3 giữ các tuyến nhanh nhất (duration thấp nhất)');
+
+  // TEST DISTANCE VS TIME (MỤC E)
+  // Route A: 5km, 20min
+  // Route B: 7km, 15min
+  // Expected: B trước A vì B nhanh hơn
+  const rDistVsTime = [
+    { id: 'A', distance: 5, duration: 20 },
+    { id: 'B', distance: 7, duration: 15 }
+  ];
+  const outDist = simulateSelectTopRoutes(rDistVsTime);
+  assert(outDist[0].id === 'B' && outDist[1].id === 'A', 'Route B (15min) đứng trước Route A (20min) mặc dù khoảng cách xa hơn');
+}
+
+/* ------------------------------------------------------------------
+   TEST GROUP 11: HIỆU NĂNG TRÊN ĐỒ THỊ 1,024 NODE (MỤC A7)
+------------------------------------------------------------------ */
+console.log('\n--- Test Group 11: Hiệu năng trên đồ thị 1,024 node (Prompt Section A7) ---');
 {
   const GRID_SIZE = 32; // 32 x 32 = 1,024 nodes
   const largeGraph = {
@@ -436,9 +507,9 @@ console.log('\n--- Test Group 10: Hiệu năng trên đồ thị 1,024 node (Pro
   const t3 = process.hrtime.bigint();
   const k3Ms = Number(t3 - t2) / 1e6;
 
-  assert(perfK3.length === 3, 'Tìm đủ 3 shortest paths trên đồ thị lớn với Candidate Min-Heap');
+  assert(perfK3.length === 3, 'Tìm đủ 3 shortest paths trên đồ thị lớn với Candidate Min-Heap & Prefix sums');
   assert(perfK3[0].cost <= perfK3[1].cost && perfK3[1].cost <= perfK3[2].cost, 'Top 3 sắp xếp thứ tự chi phí chuẩn xác');
-  assert(k3Ms < 250, `Thời gian chạy Yen K-Shortest (K=3) với Min-Heap: ${k3Ms.toFixed(2)} ms (< 250ms)`);
+  assert(k3Ms < 250, `Thời gian chạy Yen K-Shortest (K=3) với Prefix Array: ${k3Ms.toFixed(2)} ms (< 250ms)`);
 }
 
 console.log('\n================================================================');
