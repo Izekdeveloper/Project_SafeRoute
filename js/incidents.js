@@ -342,7 +342,7 @@ function fetchWithTimeout(url, options = {}, timeoutMs = 3000) {
 async function fetchOsrmRoadGeometry(n1, n2, targetStreetName = '') {
   const distFn = (typeof window !== 'undefined' && window.distanceMeters) ? window.distanceMeters : _distanceMeters;
   const directDistM = distFn(n1.lat, n1.lng, n2.lat, n2.lng);
-  if (directDistM > 150) return null;
+  if (directDistM > 3000) return null;
 
   const cacheKey = `osrm_${n1.lat.toFixed(5)},${n1.lng.toFixed(5)}_${n2.lat.toFixed(5)},${n2.lng.toFixed(5)}`;
   if (_roadSegmentCache.has(cacheKey)) {
@@ -365,7 +365,7 @@ async function fetchOsrmRoadGeometry(n1, n2, targetStreetName = '') {
     if (!r.geometry?.coordinates || r.geometry.coordinates.length < 2) return;
 
     // Khoảng cách theo đường bộ không được vòng vèo quá 2.5 lần khoảng cách chim bay
-    const maxAllowedDist = Math.max(120, directDistM * 2.5);
+    const maxAllowedDist = Math.max(150, directDistM * 2.5);
     if (r.distance > maxAllowedDist) return;
 
     const coords = r.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
@@ -396,7 +396,7 @@ async function fetchOverpassRoadGeometry(n1, n2, targetStreetName = '') {
   const directDistM = distFn(n1.lat, n1.lng, n2.lat, n2.lng);
   const midLat = (n1.lat + n2.lat) / 2;
   const midLng = (n1.lng + n2.lng) / 2;
-  const radius = Math.max(80, Math.min(200, Math.round(directDistM * 1.8)));
+  const radius = Math.max(80, Math.min(1000, Math.round(directDistM * 1.8)));
 
   const query = `[out:json][timeout:5];way(around:${radius},${midLat},${midLng})[highway];out geom;`;
   const url = `https://overpass-api.de/api/interpreter?data=` + encodeURIComponent(query);
@@ -598,11 +598,13 @@ async function buildIncidentRoadSegment(incident) {
   incident.roadCoords = slicedCoords;
   incident.segmentCoords = slicedCoords;
   incident.farthestDistance = segmentDistance;
+  incident.segmentLengthMeters = Math.round(segmentDistance);
   incident.farthestPair = [startNode, endNode];
 
   // Bước 8: Ghi log chuẩn theo yêu cầu
   console.debug('[SafeRoute][SEGMENT]', {
     incidentId: incident.id,
+    type: incident.type,
     nodeCount: nodes.length,
     startNode: { lat: startNode.lat, lng: startNode.lng },
     endNode: { lat: endNode.lat, lng: endNode.lng },
@@ -689,8 +691,13 @@ function computeProjectedDistances(lat1, lng1, lat2, lng2, bearingDeg) {
  * - Khác tên đường: TUYỆT ĐỐI KHÔNG GỘP.
  */
 function isSameRoadAndDirection(inc, data) {
-  const norm1 = inc.normalizedStreet;
-  const norm2 = normalizeStreetName(data.roadName);
+  // Phải cùng loại sự cố (bảo vệ kép)
+  if (inc.type && data.type && inc.type !== data.type) {
+    return false;
+  }
+
+  const norm1 = inc.normalizedStreet || normalizeStreetName(inc.roadName);
+  const norm2 = data.normalizedStreet || normalizeStreetName(data.roadName);
   if (norm1 && norm2) {
     const match = (norm1 === norm2) || norm1.includes(norm2) || norm2.includes(norm1);
     if (!match) return false;
@@ -717,11 +724,13 @@ function isSameRoadAndDirection(inc, data) {
 
 /**
  * Thêm mới hoặc xác nhận gộp sự cố từ cộng đồng:
- * - Khi có từ 2 node nguy hiểm trở lên trên CÙNG 1 TUYẾN ĐƯỜNG (cách nhau không quá 100m),
- *   tự động gộp thành 2 người và bôi màu đoạn đường ĐÓ (đỏ hoặc vàng tùy mức độ).
- * - Nếu có từ 3 node trở lên: Gộp tất cả thành MỘT segment duy nhất bao trọn phạm vi từ node đầu tới node cuối.
- * - KHÔNG gộp nếu ở 2 đường song song khác nhau hoặc 2 nhánh giao nhau.
- * - TUYỆT ĐỐI KHÔNG VẼ ĐƯỜNG THẲNG A -> B.
+ * - Hỗ trợ 2 kiểu hiển thị (renderMode): 'segment' và 'point' tập trung từ INCIDENT_RENDER_MODE.
+ * - Với 'segment' (ngập nước, ùn tắc, công trình, đường hỏng): gộp mắt xích liên tục trên cùng con đường,
+ *   không giới hạn cứng <=100m tổng chiều dài, hiển thị đường liền màu bám sát tim đường thực tế.
+ * - Với 'point' (tai nạn, nguy hiểm, chướng ngại vật): chỉ gộp xác nhận khi cực gần (<= 25m),
+ *   luôn hiển thị dưới dạng điểm độc lập, tuyệt đối không tạo polyline nối đường.
+ * - Cực kỳ quan trọng: Tuyệt đối KHÔNG gộp các loại sự cố khác nhau (inc.type !== data.type).
+ * - Lưu trữ thời gian động: startedAt, createdAt, lastConfirmedAt, không bao giờ hard-code.
  */
 async function addOrConfirmIncident(data) {
   cleanupExpiredIncidents();
@@ -736,8 +745,17 @@ async function addOrConfirmIncident(data) {
   let roadBearing = data.roadBearing != null ? data.roadBearing : null;
   let normStreet = normalizeStreetName(roadName);
 
-  // Ngưỡng khoảng cách gộp đoạn đường: <= 100m
-  const MERGE_ROAD_DISTANCE_METERS = 100;
+  // Xác định renderMode theo cấu hình INCIDENT_RENDER_MODE tập trung
+  const renderMode = (typeof window !== 'undefined' && window.INCIDENT_RENDER_MODE && window.INCIDENT_RENDER_MODE[data.type])
+    || (typeof window !== 'undefined' && window.INCIDENT_TYPES && window.INCIDENT_TYPES[data.type]?.renderMode)
+    || 'point';
+
+  // Ngưỡng khoảng cách nối chuỗi liên tiếp cho segment: 120m (hoặc theo cấu hình)
+  const CHAIN_MERGE_DISTANCE_METERS = (typeof window !== 'undefined' && window.CONFIG && window.CONFIG.incident_merge_radius_m) 
+    ? Math.max(120, window.CONFIG.incident_merge_radius_m) 
+    : 120;
+  // Ngưỡng gộp cho point: 25m (chỉ gộp khi xác nhận cùng điểm sự cố)
+  const POINT_MERGE_DISTANCE_METERS = 25;
 
   let nearby = null;
   let minDistance = Infinity;
@@ -748,14 +766,34 @@ async function addOrConfirmIncident(data) {
     osmWayId,
     roadBearing,
     lat: snappedLat,
-    lng: snappedLng
+    lng: snappedLng,
+    type: data.type
   };
 
-  // CHỈ GỘP KHI NẰM TRÊN CÙNG 1 ĐƯỜNG VÀ KHOẢNG CÁCH <= 100M
+  // CHỈ GỘP KHI CÙNG LOẠI SỰ CỐ, CÙNG ĐƯỜNG VÀ THỎA MÃN ĐIỀU KIỆN
   for (const inc of incidents) {
     const c = calculateCurrentConfidence(inc);
     if (c <= 0) continue;
 
+    // 1. CỰC KỲ QUAN TRỌNG: TUYỆT ĐỐI KHÔNG GỘP CÁC LOẠI SỰ CỐ KHÁC NHAU!
+    // Ví dụ: Ngập nước không gộp với tai nạn hay công trình
+    if (inc.type !== data.type) {
+      continue;
+    }
+
+    if (renderMode === 'point') {
+      // Đối với sự cố dạng point (accident, danger, obstacle):
+      // Chỉ gộp khi khoảng cách rất gần (<= 25m) nhằm xác nhận cùng 1 sự cố tại vị trí đó
+      const dPoint = distFn(inc.lat, inc.lng, data.lat, data.lng);
+      if (dPoint <= POINT_MERGE_DISTANCE_METERS && dPoint < minDistance) {
+        minDistance = dPoint;
+        nearby = inc;
+      }
+      continue;
+    }
+
+    // Đối với sự cố dạng segment (flood, traffic, construction, damaged_road):
+    // Gộp theo chuỗi mắt xích liên tục trên cùng tuyến đường (khoảng cách tới bất kỳ node nào trong cluster <= 120m)
     let d = distFn(inc.lat, inc.lng, data.lat, data.lng);
     if (inc.nodes && inc.nodes.length > 0) {
       for (const node of inc.nodes) {
@@ -763,8 +801,14 @@ async function addOrConfirmIncident(data) {
         if (dNode < d) d = dNode;
       }
     }
+    if (inc.segmentCoords && inc.segmentCoords.length >= 2) {
+      const dPoly = (typeof window.minDistanceToPolyline === 'function') 
+        ? window.minDistanceToPolyline(data.lat, data.lng, inc.segmentCoords) 
+        : Infinity;
+      if (dPoly < d) d = dPoly;
+    }
 
-    if (d > MERGE_ROAD_DISTANCE_METERS) {
+    if (d > CHAIN_MERGE_DISTANCE_METERS) {
       logMergeDebug({
         distance: d,
         roadNameA: inc.roadName,
@@ -773,7 +817,7 @@ async function addOrConfirmIncident(data) {
         osmWayIdB: osmWayId,
         sameRoad: false,
         merge: false,
-        reason: `Khoảng cách (${Math.round(d)}m) vượt quá ngưỡng 100m`
+        reason: `Khoảng cách mắt xích (${Math.round(d)}m) vượt quá ngưỡng ${CHAIN_MERGE_DISTANCE_METERS}m`
       });
       continue;
     }
@@ -811,6 +855,9 @@ async function addOrConfirmIncident(data) {
     nearby.reporterCount = (nearby.reporterCount || 1) + 1;
     const currentC = calculateCurrentConfidence(nearby);
     nearby.confidence = Math.min(100, Math.max(75, currentC + 30));
+
+    // QUAN TRỌNG: TUYỆT ĐỐI KHÔNG GHI ĐÈ startedAt / createdAt!
+    if (!nearby.startedAt) nearby.startedAt = nearby.createdAt || Date.now();
     nearby.lastConfirmedAt = Date.now();
 
     const newReporterId = 'user-' + Math.random().toString(36).slice(2, 7);
@@ -823,7 +870,7 @@ async function addOrConfirmIncident(data) {
       nearby.level = 'trungbinh';
     }
 
-    // Gán tên đường chuẩn xác
+    // Gán tên đường chuẩn xác nếu trước đó chưa có
     if (!nearby.roadName && roadName) {
       nearby.roadName = roadName;
       nearby.normalizedStreet = normStreet;
@@ -833,10 +880,48 @@ async function addOrConfirmIncident(data) {
 
     // Ghi nhận node mới vào danh sách node
     if (!nearby.nodes || nearby.nodes.length === 0) {
-      nearby.nodes = [{ lat: nearby.lat, lng: nearby.lng, osmWayId: nearby.osmWayId, roadBearing: nearby.roadBearing }];
+      nearby.nodes = [{ lat: nearby.lat, lng: nearby.lng, osmWayId: nearby.osmWayId, roadBearing: nearby.roadBearing, reportedAt: nearby.startedAt }];
     }
-    const newNode = { lat: snappedLat, lng: snappedLng, rawLat: data.lat, rawLng: data.lng, osmWayId, roadBearing };
+    const newNode = {
+      lat: snappedLat,
+      lng: snappedLng,
+      rawLat: data.lat,
+      rawLng: data.lng,
+      osmWayId,
+      roadBearing,
+      reportedAt: Date.now()
+    };
     nearby.nodes.push(newNode);
+
+    // 2. Gộp hiển thị (Visual merge):
+    if (nearby.renderMode === 'segment' || renderMode === 'segment') {
+      nearby.renderMode = 'segment';
+
+      // Làm mới fullRoadGeometry nếu node mới cách xa hình học cũ để bao quát toàn bộ đoạn đường mới
+      if (nearby.fullRoadGeometry) {
+        const snapCheck = snapPointToPolyline(newNode.lat, newNode.lng, nearby.fullRoadGeometry);
+        if (!snapCheck || snapCheck.dist > 50) {
+          nearby.fullRoadGeometry = null;
+        }
+      }
+
+      await buildIncidentRoadSegment(nearby);
+
+      if (nearby.segmentCoords && nearby.segmentCoords.length >= 2) {
+        nearby.segmentLengthMeters = Math.round(calculatePolylineDistance(nearby.segmentCoords));
+      }
+
+      console.debug('[SafeRoute][INCIDENT_CLUSTER]', {
+        incidentId: nearby.id,
+        type: nearby.type,
+        renderMode: 'segment',
+        nodeCount: nearby.nodes.length,
+        roadName: nearby.roadName,
+        totalLengthMeters: nearby.segmentLengthMeters || 0,
+        startedAt: nearby.startedAt,
+        lastConfirmedAt: nearby.lastConfirmedAt
+      });
+    }
 
     logMergeDebug({
       distance: minDistance,
@@ -846,32 +931,35 @@ async function addOrConfirmIncident(data) {
       osmWayIdB: osmWayId,
       sameRoad: true,
       merge: true,
-      reason: `Đã gộp thành công ${nearby.reporterCount} node trên đường ${nearby.roadName || 'này'}`
+      reason: `Đã gộp thành công ${nearby.reporterCount} người báo cáo trên đường ${nearby.roadName || 'này'}`
     });
-
-    // 2. Gộp hiển thị (Visual merge): Xây dựng đoạn đường uốn lượn theo tim đường thực tế NGAY LẬP TỨC
-    await buildIncidentRoadSegment(nearby);
 
     if (typeof window !== 'undefined') {
       if (typeof window.renderIncidents === 'function') window.renderIncidents();
       if (typeof window.renderNearbyPanel === 'function') window.renderNearbyPanel();
       if (typeof window.showToast === 'function') {
-        const colorName = nearby.level === 'cao' ? 'ĐỎ' : 'VÀNG';
+        const typeMeta = (window.INCIDENT_TYPES && window.INCIDENT_TYPES[nearby.type]) || {};
+        const typeName = typeMeta.label || nearby.type;
         const displayRoad = nearby.roadName ? `trên đường ${nearby.roadName} ` : '';
-        window.showToast(`Đã gộp ${nearby.reporterCount} người báo cáo ${displayRoad}(bôi ${colorName}).`);
+        const lenText = (nearby.renderMode === 'segment' && nearby.segmentLengthMeters)
+          ? ` (đoạn đường ~${nearby.segmentLengthMeters}m)`
+          : '';
+        window.showToast(`Đã gộp ${nearby.reporterCount} người báo cáo ${typeName} ${displayRoad}${lenText}.`);
       }
       window.dispatchEvent(new CustomEvent('incidents-changed'));
     }
 
     return nearby;
   } else {
-    // Tạo incident mới (Node 1 trên con đường này)
+    // Tạo incident mới
+    const now = Date.now();
     const newInc = {
       id: (typeof crypto !== 'undefined' && crypto.randomUUID)
         ? crypto.randomUUID()
         : 'inc-' + Date.now(),
       type: data.type,
       level: data.level,
+      renderMode: renderMode,
       lat: snappedLat,
       lng: snappedLng,
       rawLat: data.lat,
@@ -884,11 +972,13 @@ async function addOrConfirmIncident(data) {
       confidence: 50,
       reporterCount: 1,
       reporterIds: [demoUser],
-      nodes: [{ lat: snappedLat, lng: snappedLng, rawLat: data.lat, rawLng: data.lng, osmWayId, roadBearing }],
-      createdAt: Date.now(),
-      lastConfirmedAt: Date.now(),
+      nodes: [{ lat: snappedLat, lng: snappedLng, rawLat: data.lat, rawLng: data.lng, osmWayId, roadBearing, reportedAt: now }],
+      startedAt: now,
+      createdAt: now,
+      lastConfirmedAt: now,
       roadCoords: null,
-      segmentCoords: null
+      segmentCoords: null,
+      segmentLengthMeters: 0
     };
 
     incidents.push(newInc);
@@ -901,7 +991,7 @@ async function addOrConfirmIncident(data) {
       osmWayIdB: null,
       sameRoad: true,
       merge: false,
-      reason: 'Tạo mới điểm báo cáo sự cố (chưa có điểm lân cận để gộp)'
+      reason: 'Tạo mới điểm báo cáo sự cố (chưa có điểm lân cận cùng loại để gộp)'
     });
 
     if (typeof window !== 'undefined') {
@@ -936,7 +1026,7 @@ async function addOrConfirmIncident(data) {
 }
 
 /**
- * Vote xác nhận sự cố trực tiếp từ Popup bản đồ (+50% confidence)
+ * Vote xác nhận sự cố trực tiếp từ Popup bản đồ (+30% confidence)
  * @param {string} id 
  */
 function voteConfirmIncident(id) {
@@ -953,8 +1043,9 @@ function voteConfirmIncident(id) {
   }
 
   const currentC = calculateCurrentConfidence(inc);
-  inc.confidence = Math.min(100, currentC + 50);
+  inc.confidence = Math.min(100, currentC + 30);
   inc.lastConfirmedAt = Date.now();
+  if (!inc.startedAt) inc.startedAt = inc.createdAt || Date.now();
   inc.reporterCount = (inc.reporterCount || 1) + 1;
   inc.reporterIds = [...(inc.reporterIds || []), demoUser];
 
@@ -977,7 +1068,9 @@ function dismissIncident(id) {
   if (!inc) return;
 
   inc.confidence = Math.max(0, inc.confidence - 60);
+  inc.lastConfirmedAt = Date.now();
   if (inc.confidence <= 10) {
+    inc.resolvedAt = Date.now();
     incidents = incidents.filter(item => item.id !== id);
   }
 

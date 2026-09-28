@@ -89,6 +89,17 @@ const CONFIG = {
   route_colors: ['#2f7ee0', '#f08a1c', '#12b76a', '#8a4fe0', '#e3492c']
 };
 
+// Cấu hình kiểu hiển thị mặc định theo từng loại sự cố (point vs segment)
+const INCIDENT_RENDER_MODE = {
+  flood: 'segment',
+  accident: 'point',
+  construction: 'segment',
+  traffic: 'segment',
+  damaged_road: 'segment',
+  danger: 'point',
+  obstacle: 'point'
+};
+
 // Aliases cho tương thích ngược với code cũ
 const INCIDENT_MERGE_RADIUS_METERS = CONFIG.incident_merge_radius_m;
 const RISK_IMPACT = CONFIG.risk_impact;
@@ -98,16 +109,16 @@ const INCIDENT_DECAY_CONFIG = CONFIG.decay;
 const ROUTE_COLORS = CONFIG.route_colors;
 
 /**
- * Định nghĩa metadata trực quan cho từng loại sự cố
+ * Định nghĩa metadata trực quan và renderMode cho từng loại sự cố
  */
 const INCIDENT_TYPES = {
-  accident:     { label: 'Tai nạn giao thông',       emoji: '🔴', color: '#e3492c' },
-  flood:        { label: 'Ngập nước',                emoji: '🔵', color: '#2f7ee0' },
-  construction: { label: 'Công trình đang thi công', emoji: '🟠', color: '#f08a1c' },
-  traffic:      { label: 'Ùn tắc',                   emoji: '🟡', color: '#f4b400' },
-  danger:       { label: 'Khu vực nguy hiểm',        emoji: '⚠️', color: '#8a4fe0' },
-  damaged_road: { label: 'Đường hư hỏng',            emoji: '🟤', color: '#8d6e63' },
-  obstacle:     { label: 'Chướng ngại vật',          emoji: '🟣', color: '#7c4dff' },
+  flood:        { label: 'Ngập nước',                emoji: '🔵', color: '#2563eb', renderMode: 'segment' },
+  accident:     { label: 'Tai nạn giao thông',       emoji: '🔴', color: '#ef4444', renderMode: 'point' },
+  construction: { label: 'Công trình đang thi công', emoji: '🟠', color: '#f97316', renderMode: 'segment' },
+  traffic:      { label: 'Ùn tắc',                   emoji: '🟡', color: '#f59e0b', renderMode: 'segment' },
+  damaged_road: { label: 'Đường hư hỏng',            emoji: '🟤', color: '#8d6e63', renderMode: 'segment' },
+  danger:       { label: 'Khu vực nguy hiểm',        emoji: '⚠️', color: '#8a4fe0', renderMode: 'point' },
+  obstacle:     { label: 'Chướng ngại vật',          emoji: '🟣', color: '#7c4dff', renderMode: 'point' },
 };
 
 const LEVEL_LABEL = {
@@ -185,12 +196,34 @@ function minDistanceToPolyline(lat, lng, coords) {
 }
 
 /**
+ * Định dạng thời gian tuyệt đối theo tiếng Việt (ví dụ: '28/09/2026 10:42')
+ * Dữ liệu thời gian động 100%, tuyệt đối không hard-code ngày tháng
+ * @param {number} ts - Timestamp mili-giây
+ * @returns {string}
+ */
+function formatDateTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '';
+  const pad = n => String(n).padStart(2, '0');
+  const day = pad(d.getDate());
+  const month = pad(d.getMonth() + 1);
+  const year = d.getFullYear();
+  const hours = pad(d.getHours());
+  const mins = pad(d.getMinutes());
+  return `${day}/${month}/${year} ${hours}:${mins}`;
+}
+
+/**
  * Định dạng thời gian tương đối theo tiếng Việt (ví dụ: '5 phút trước')
  * @param {number} ts - Timestamp mili-giây
  * @returns {string}
  */
 function formatRelativeTime(ts) {
-  const mins = Math.floor((Date.now() - ts) / 60000);
+  if (!ts) return '';
+  const diffMs = Date.now() - ts;
+  if (diffMs < 0) return 'Vừa xong';
+  const mins = Math.floor(diffMs / 60000);
   if (mins < 1) return 'Vừa xong';
   if (mins < 60) return `${mins} phút trước`;
   const hrs = Math.floor(mins / 60);
@@ -208,6 +241,7 @@ if (typeof window !== 'undefined') {
   window.INCIDENT_LEVEL_WEIGHT = INCIDENT_LEVEL_WEIGHT;
   window.INCIDENT_DECAY_CONFIG = INCIDENT_DECAY_CONFIG;
   window.ROUTE_COLORS = ROUTE_COLORS;
+  window.INCIDENT_RENDER_MODE = INCIDENT_RENDER_MODE;
   window.INCIDENT_TYPES = INCIDENT_TYPES;
   window.LEVEL_LABEL = LEVEL_LABEL;
   window.escapeHtml = escapeHtml;
@@ -217,6 +251,7 @@ if (typeof window !== 'undefined') {
   window.distanceMeters = distanceMeters;
   window.minDistanceToPolyline = minDistanceToPolyline;
   window.formatRelativeTime = formatRelativeTime;
+  window.formatDateTime = formatDateTime;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -229,6 +264,7 @@ if (typeof module !== 'undefined' && module.exports) {
     INCIDENT_LEVEL_WEIGHT,
     INCIDENT_DECAY_CONFIG,
     ROUTE_COLORS,
+    INCIDENT_RENDER_MODE,
     INCIDENT_TYPES,
     LEVEL_LABEL,
     escapeHtml,
@@ -237,6 +273,7 @@ if (typeof module !== 'undefined' && module.exports) {
     haversineMeters,
     distanceMeters,
     minDistanceToPolyline,
-    formatRelativeTime
+    formatRelativeTime,
+    formatDateTime
   };
 }
