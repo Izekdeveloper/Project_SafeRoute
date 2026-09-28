@@ -11,7 +11,9 @@
  * ============================================================================
  */
 
-const _minDistanceToPolyline = (typeof window !== 'undefined' && window.minDistanceToPolyline) ? window.minDistanceToPolyline : (() => Infinity);
+const _minDistanceToPolyline = (typeof window !== 'undefined' && window.minDistanceToPolyline)
+  ? window.minDistanceToPolyline
+  : ((typeof minDistanceToPolyline === 'function') ? minDistanceToPolyline : (() => Infinity));
 const _ROUTE_COLORS = (typeof window !== 'undefined' && window.ROUTE_COLORS) ? window.ROUTE_COLORS : ['#2f7ee0', '#f08a1c', '#12b76a', '#8a4fe0', '#e3492c'];
 
 
@@ -89,32 +91,357 @@ function isRouteInsideVietnam(route) {
 }
 
 /* ---------------------------------------------------------------
-   2. TRUY VẤN OSRM ROUTING API
+   2. TRUY VẤN OSRM ROUTING API & BỘ NHỚ ĐỆM (ROUTE CACHE + IN-FLIGHT)
 --------------------------------------------------------------- */
-async function fetchOsrmRawRoute(waypoints) {
-  const coordStr = waypoints.map(p => `${p.lng},${p.lat}`).join(';');
-  const url = `https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson&steps=true&alternatives=true`;
-  const res = await fetch(url);
-  if (!res.ok) return [];
-  const data = await res.json();
-  if (data.code !== 'Ok' || !data.routes?.length) return [];
-  return data.routes.map((route, index) => ({
-    coords: route.geometry.coordinates.map(([lng, lat]) => [lat, lng]),
-    distance: route.distance / 1000,
-    duration: route.duration / 60,
-    legs: route.legs,
-    routeIndex: index,
-    riskScore: 0,
-    source: 'osrm'
-  }));
+
+function _isDebugRouting() {
+  return (typeof window !== 'undefined' && window.DEBUG_ROUTING != null)
+    ? window.DEBUG_ROUTING === true
+    : (typeof CONFIG !== 'undefined' && CONFIG.debug_routing === true);
 }
 
-async function findSafeRoutes(start, end) {
+/**
+ * Lớp quản lý bộ nhớ đệm lộ trình OSRM (LRU + TTL Cache)
+ * Tách biệt hoàn toàn tầng hình học OSRM với tầng tính điểm rủi ro sự cố
+ */
+class RouteCache {
+  constructor(maxEntries = 100, ttlMs = 180000) {
+    this.maxEntries = maxEntries;
+    this.ttlMs = ttlMs;
+    /** @type {Map<string, { data: any, expiresAt: number, createdAt: number }>} */
+    this.cache = new Map();
+  }
+
+  /**
+   * Tạo cache key duy nhất dựa trên profile, waypoints đã chuẩn hóa, và các options
+   * Tọa độ được làm tròn 5 chữ số thập phân (~1.1m) để chống micro-jitter nhưng giữ nguyên độ chính xác định tuyến
+   */
+  static createKey(waypoints, options = {}) {
+    const profile = options.profile || 'driving';
+    const overview = options.overview || 'full';
+    const steps = Boolean(options.steps);
+    const alternatives = Boolean(options.alternatives);
+    const coordStr = (waypoints || []).map(p => {
+      const lat = Number(p.lat).toFixed(5);
+      const lng = Number(p.lng).toFixed(5);
+      return `${lng},${lat}`;
+    }).join(';');
+    return `${profile}::${coordStr}::ov=${overview}::st=${steps}::alt=${alternatives}`;
+  }
+
+  get(key) {
+    if (!key) return null;
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+
+    const now = Date.now();
+    if (now > entry.expiresAt) {
+      this.cache.delete(key);
+      return null;
+    }
+
+    // Refresh vị trí trong LRU Map
+    this.cache.delete(key);
+    this.cache.set(key, entry);
+
+    // Trả về bản sao để tránh đột biến dữ liệu
+    return JSON.parse(JSON.stringify(entry.data));
+  }
+
+  set(key, data) {
+    if (!key || !data) return;
+
+    // Giới hạn dung lượng: xóa entry cũ nhất nếu vượt quá giới hạn
+    if (this.cache.size >= this.maxEntries && !this.cache.has(key)) {
+      const oldestKey = this.cache.keys().next().value;
+      if (oldestKey) this.cache.delete(oldestKey);
+    }
+
+    const ttl = (typeof window !== 'undefined' && window.OSRM_CACHE_TTL) ? window.OSRM_CACHE_TTL : this.ttlMs;
+    this.cache.set(key, {
+      data: JSON.parse(JSON.stringify(data)),
+      createdAt: Date.now(),
+      expiresAt: Date.now() + ttl
+    });
+  }
+
+  has(key) {
+    return this.get(key) !== null;
+  }
+
+  delete(key) {
+    return this.cache.delete(key);
+  }
+
+  clear() {
+    this.cache.clear();
+  }
+
+  size() {
+    return this.cache.size;
+  }
+}
+
+// Khởi tạo Singleton RouteCache và Map quản lý in-flight requests
+const _initTtl = (typeof window !== 'undefined' && window.OSRM_CACHE_TTL) ? window.OSRM_CACHE_TTL : 180000;
+const _initMax = (typeof window !== 'undefined' && window.OSRM_CACHE_MAX_ENTRIES) ? window.OSRM_CACHE_MAX_ENTRIES : 100;
+const osrmRouteCache = new RouteCache(_initMax, _initTtl);
+const inFlightRequests = new Map();
+
+// Biến kiểm soát chống Race Condition và AbortController toàn cục cho phiên tìm đường
+let routingRequestId = 0;
+let activeRoutingController = null;
+
+/**
+ * Concurrency Limiter: Thực thi tác vụ bất đồng bộ với giới hạn số request song song tối đa
+ * @param {Array<any>} items - Danh sách tham số đầu vào
+ * @param {number} limit - Số request đồng thời tối đa (ví dụ 3)
+ * @param {Function} asyncFn - Hàm bất đồng bộ cần chạy
+ */
+async function mapConcurrent(items, limit, asyncFn) {
+  const results = [];
+  const executing = new Set();
+  for (const item of items) {
+    const p = Promise.resolve().then(() => asyncFn(item));
+    results.push(p);
+    executing.add(p);
+    const clean = () => executing.delete(p);
+    p.then(clean, clean);
+    if (executing.size >= limit) {
+      await Promise.race(executing);
+    }
+  }
+  return Promise.allSettled(results);
+}
+
+/**
+ * Hàm truy vấn OSRM tối ưu hóa:
+ * 1. Kiểm tra RouteCache (nếu hit -> trả về ngay, 0 network request)
+ * 2. Quản lý in-flight requests dùng chung: mỗi request có AbortController độc lập,
+ *    nhiều caller có thể cùng subscribe, caller bị hủy không làm chết shared request của caller khác.
+ * 3. Hỗ trợ Timeout (OSRM_TIMEOUT = 8000ms) và AbortController
+ * 4. Tùy chỉnh steps=false cho candidate routes để giảm 70% payload
+ * 5. Tự động lưu cache và xử lý lỗi/fallback an toàn, không crash app
+ */
+async function fetchOsrmRoute(waypoints, options = {}, externalSignal = null, metrics = null) {
+  if (!waypoints || waypoints.length < 2) return [];
+
+  const overview = options.overview || 'full';
+  const steps = Boolean(options.steps);
+  const alternatives = Boolean(options.alternatives);
+  const profile = options.profile || 'driving';
+
+  const cacheKey = RouteCache.createKey(waypoints, { profile, overview, steps, alternatives });
+
+  // 1. KIỂM TRA CACHE
+  const cached = osrmRouteCache.get(cacheKey);
+  if (cached) {
+    if (metrics) metrics.cacheHits = (metrics.cacheHits || 0) + 1;
+    if (_isDebugRouting()) console.log(`[OSRM] cache hit: ${cacheKey}`);
+    return cached;
+  }
+
+  // 2. KIỂM TRA TÍN HIỆU ĐÃ BỊ HỦY CHƯA TRƯỚC KHI BẮT ĐẦU
+  if (externalSignal && externalSignal.aborted) {
+    if (_isDebugRouting()) console.log(`[OSRM] request skipped (aborted): ${cacheKey}`);
+    return [];
+  }
+
+  // 3. THAM GIA HOẶC TẠO IN-FLIGHT REQUEST MỚI
+  let inFlightEntry = inFlightRequests.get(cacheKey);
+
+  if (inFlightEntry) {
+    if (metrics) metrics.inFlightHits = (metrics.inFlightHits || 0) + 1;
+    if (_isDebugRouting()) console.log(`[OSRM] in-flight subscriber joined: ${cacheKey}`);
+  } else {
+    // Tạo shared request mới với AbortController độc lập
+    const sharedController = new AbortController();
+    const timeoutMs = (typeof window !== 'undefined' && window.OSRM_TIMEOUT) 
+      ? window.OSRM_TIMEOUT 
+      : ((typeof CONFIG !== 'undefined' && CONFIG.osrm_timeout_ms) ? CONFIG.osrm_timeout_ms : 8000);
+
+    let isTimedOut = false;
+    const timeoutId = setTimeout(() => {
+      isTimedOut = true;
+      try { sharedController.abort(); } catch (_) {}
+    }, timeoutMs);
+
+    const coordStr = waypoints.map(p => `${Number(p.lng).toFixed(6)},${Number(p.lat).toFixed(6)}`).join(';');
+    const url = `https://router.project-osrm.org/route/v1/${profile}/${coordStr}?overview=${overview}&geometries=geojson&steps=${steps}&alternatives=${alternatives}`;
+
+    if (metrics) metrics.requests = (metrics.requests || 0) + 1;
+
+    const sharedPromise = (async () => {
+      try {
+        if (_isDebugRouting()) console.log(`[OSRM] request start: ${coordStr} (steps=${steps}, alt=${alternatives})`);
+        const res = await fetch(url, { signal: sharedController.signal });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) {
+          if (_isDebugRouting()) console.warn(`[OSRM] HTTP error: status ${res.status}`);
+          return [];
+        }
+
+        const data = await res.json();
+        if (data.code !== 'Ok' || !data.routes?.length) {
+          if (_isDebugRouting()) console.warn(`[OSRM] API returned non-OK code: ${data.code}`);
+          return [];
+        }
+
+        const mappedRoutes = data.routes.map((route, index) => ({
+          coords: route.geometry.coordinates.map(([lng, lat]) => [lat, lng]),
+          distance: route.distance / 1000,
+          duration: route.duration / 60,
+          legs: route.legs || [],
+          routeIndex: index,
+          riskScore: 0,
+          source: 'osrm',
+          waypoints: waypoints.map(w => ({ lat: Number(w.lat), lng: Number(w.lng) }))
+        }));
+
+        if (_isDebugRouting()) console.log(`[OSRM] request completed: ${coordStr} -> ${mappedRoutes.length} route(s)`);
+
+        // Lưu vào cache
+        osrmRouteCache.set(cacheKey, mappedRoutes);
+        return mappedRoutes;
+
+      } catch (err) {
+        clearTimeout(timeoutId);
+
+        if (isTimedOut) {
+          if (_isDebugRouting()) console.warn(`[OSRM] timeout (${timeoutMs}ms): ${coordStr}`);
+        } else if (err.name === 'AbortError' || sharedController.signal.aborted) {
+          if (_isDebugRouting()) console.log(`[OSRM] shared request aborted: ${coordStr}`);
+        } else {
+          if (_isDebugRouting()) console.warn(`[OSRM] network/parse error: ${err.message}`);
+        }
+
+        return [];
+      } finally {
+        clearTimeout(timeoutId);
+        inFlightRequests.delete(cacheKey);
+      }
+    })();
+
+    inFlightEntry = {
+      controller: sharedController,
+      subscribers: new Set(),
+      promise: sharedPromise
+    };
+    inFlightRequests.set(cacheKey, inFlightEntry);
+    if (_isDebugRouting()) console.log(`[OSRM] shared in-flight request created: ${cacheKey}`);
+  }
+
+  // 4. ĐĂNG KÝ CALLER VÀO DANH SÁCH SUBSCRIBER CỦA IN-FLIGHT REQUEST
+  const subToken = Symbol('caller_sub');
+  inFlightEntry.subscribers.add(subToken);
+
+  return await new Promise((resolve) => {
+    let settled = false;
+
+    const cleanup = () => {
+      if (externalSignal && onCallerAbort) {
+        externalSignal.removeEventListener('abort', onCallerAbort);
+      }
+      inFlightEntry.subscribers.delete(subToken);
+    };
+
+    const finish = (routes) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      // Bản sao sâu (deep clone) để tránh các caller làm thay đổi thuộc tính của nhau
+      resolve(routes && Array.isArray(routes) ? JSON.parse(JSON.stringify(routes)) : []);
+    };
+
+    const onCallerAbort = () => {
+      if (settled) return;
+      if (_isDebugRouting()) {
+        console.log(`[OSRM] individual caller aborted, remaining subscribers: ${inFlightEntry.subscribers.size - 1}`);
+      }
+      cleanup();
+      settled = true;
+
+      // Chỉ hủy underlying request thực tế khi TẤT CẢ caller đều đã hủy / không còn subscriber nào chờ
+      if (inFlightEntry.subscribers.size === 0) {
+        if (_isDebugRouting()) {
+          console.log(`[OSRM] 0 subscribers remaining -> aborting underlying OSRM request: ${cacheKey}`);
+        }
+        try { inFlightEntry.controller.abort(); } catch (_) {}
+      }
+
+      resolve([]);
+    };
+
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        onCallerAbort();
+        return;
+      }
+      externalSignal.addEventListener('abort', onCallerAbort, { once: true });
+    }
+
+    inFlightEntry.promise.then(
+      routes => finish(routes),
+      () => finish([])
+    );
+  });
+}
+
+/**
+ * Tương thích ngược với các module khác đang gọi fetchOsrmRawRoute
+ */
+async function fetchOsrmRawRoute(waypoints, options = {}, signal = null) {
+  return await fetchOsrmRoute(waypoints, options, signal);
+}
+
+/**
+ * Tìm kiếm các tuyến đường an toàn:
+ * - Hỗ trợ phân tích đa tuyến, tránh sự cố bằng waypoints thông minh
+ * - Tối ưu hóa request OSRM bằng Cache, In-flight deduplication, Concurrency Limiter
+ * - Giảm payload OSRM (steps=false ở giai đoạn ứng viên, chỉ lấy steps=true cho tuyến cuối cùng)
+ * - Chống race condition hoàn toàn bằng routingRequestId và AbortController
+ */
+async function findSafeRoutes(start, end, options = {}) {
+  const thisRequestId = ++routingRequestId;
+
+  // 1. HỦY PHIÊN TÌM ĐƯỜNG CŨ NẾU CÒN ĐANG CHẠY (ABORT CONTROLLER)
+  if (activeRoutingController) {
+    try { activeRoutingController.abort(); } catch (_) {}
+    if (_isDebugRouting()) console.log('[OSRM] Đã hủy phiên tìm đường đang chạy trước đó.');
+  }
+  activeRoutingController = new AbortController();
+  const sessionSignal = activeRoutingController.signal;
+
+  const startTime = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+  const metrics = {
+    requestId: thisRequestId,
+    requests: 0,
+    cacheHits: 0,
+    inFlightHits: 0,
+    candidates: 0,
+    uniqueRoutes: 0,
+    totalTimeMs: 0
+  };
+
+  // Tuyến cơ sở (Base route): yêu cầu geometry full, bật alternatives, tắt steps để giảm dung lượng
+  const baseOptions = {
+    overview: 'full',
+    steps: (typeof window !== 'undefined' && window.OSRM_CANDIDATE_STEPS) ? window.OSRM_CANDIDATE_STEPS : false,
+    alternatives: (typeof window !== 'undefined' && window.OSRM_ENABLE_ALTERNATIVES != null) ? window.OSRM_ENABLE_ALTERNATIVES : true
+  };
+
   let initialRoutes = [];
   try {
-    initialRoutes = await fetchOsrmRawRoute([start, end]);
+    initialRoutes = await fetchOsrmRoute([start, end], baseOptions, sessionSignal, metrics);
   } catch (err) {
-    console.warn('OSRM raw route error:', err.message);
+    if (_isDebugRouting()) console.warn('[OSRM] Base route fetch error:', err.message);
+  }
+
+  // Kiểm tra race condition
+  if (thisRequestId !== routingRequestId || sessionSignal.aborted) {
+    if (_isDebugRouting()) console.log(`[OSRM] Bỏ qua kết quả request #${thisRequestId} vì đã có request mới hơn #${routingRequestId}`);
+    return [];
   }
 
   let validRoutes = initialRoutes.filter(r => isRouteInsideVietnam(r));
@@ -131,8 +458,9 @@ async function findSafeRoutes(start, end) {
     ].filter(wp => wp.lat > minLat + 0.3 && wp.lat < maxLat - 0.3);
 
     for (const wp of candidateWps) {
+      if (thisRequestId !== routingRequestId || sessionSignal.aborted) return [];
       try {
-        const segRoutes = await fetchOsrmRawRoute([start, wp, end]);
+        const segRoutes = await fetchOsrmRoute([start, wp, end], { overview: 'full', steps: false, alternatives: false }, sessionSignal, metrics);
         const ok = segRoutes.filter(r => isRouteInsideVietnam(r));
         if (ok.length > 0) {
           validRoutes.push(...ok);
@@ -142,60 +470,103 @@ async function findSafeRoutes(start, end) {
     }
   }
 
-  // Đích quá xa (>= 300km): luôn đề xuất thêm phương án trung chuyển 3 chặng
-  // (đường bộ -> máy bay/tàu -> đường bộ), hiển thị song song với các tuyến đường bộ.
+  // Đích quá xa (>= 300km): lập phương án trung chuyển 3 chặng kết hợp
   if (typeof window !== 'undefined') window.transportFallback = null;
   const directDistKm = haversineKm(start.lat, start.lng, end.lat, end.lng);
   if (directDistKm >= MULTIMODAL_MIN_DISTANCE_KM) {
     try {
-      const plan = await planMultimodalFallback(start, end);
+      const plan = await planMultimodalFallback(start, end, sessionSignal, metrics);
       if (typeof window !== 'undefined') window.transportFallback = plan;
     } catch (err) {
-      console.warn('[SafeRoute] Không lập được phương án trung chuyển:', err);
+      if (_isDebugRouting()) console.warn('[SafeRoute] Không lập được phương án trung chuyển:', err);
     }
   }
+
+  if (thisRequestId !== routingRequestId || sessionSignal.aborted) return [];
   if (validRoutes.length === 0) return [];
 
   // ===== WAYPOINT AVOIDANCE ROUTING =====
-  // Luôn chủ động tạo các tuyến đường vòng tránh khu vực có sự cố/nguy hiểm
+  // Chủ động tạo các tuyến đường vòng tránh khu vực có sự cố/nguy hiểm
   try {
-    const avoidanceRoutes = await _generateAvoidanceRoutes(start, end, validRoutes);
+    const avoidanceRoutes = await _generateAvoidanceRoutes(start, end, validRoutes, sessionSignal, metrics);
     if (avoidanceRoutes.length > 0) {
       validRoutes.push(...avoidanceRoutes);
-      console.log(`[SafeRoute] Đã bổ sung ${avoidanceRoutes.length} tuyến tránh sự cố vào tập ứng viên.`);
+      if (_isDebugRouting()) console.log(`[OSRM] candidate routes: Đã bổ sung ${avoidanceRoutes.length} tuyến tránh sự cố vào tập ứng viên.`);
     }
   } catch (err) {
-    console.warn('[SafeRoute] Lỗi tạo tuyến tránh:', err);
+    if (_isDebugRouting()) console.warn('[SafeRoute] Lỗi tạo tuyến tránh:', err);
   }
 
-  // Chấm điểm rủi ro chính xác cho toàn bộ các tuyến ứng viên
+  if (thisRequestId !== routingRequestId || sessionSignal.aborted) return [];
+
+  metrics.candidates = validRoutes.length;
+
+  // Loại trùng lặp tuyến bằng Geometry Signature + sai số khoảng cách/thời gian
+  validRoutes = _deduplicateRoutes(validRoutes);
+  metrics.uniqueRoutes = validRoutes.length;
+  if (_isDebugRouting()) console.log(`[OSRM] deduplicated routes: ${metrics.candidates} ứng viên -> ${metrics.uniqueRoutes} tuyến duy nhất`);
+
+  // Chấm điểm rủi ro chính xác cho toàn bộ các tuyến ứng viên (Risk Recalculation)
   validRoutes.forEach(r => {
     r.riskScore = calculateRouteRisk(r);
   });
 
-  // Loại trùng lặp tuyến
-  validRoutes = _deduplicateRoutes(validRoutes);
+  // Giới hạn số lượng tuyến tối đa (OSRM_MAX_ROUTES)
+  const maxRoutes = (typeof window !== 'undefined' && window.OSRM_MAX_ROUTES) 
+    ? window.OSRM_MAX_ROUTES 
+    : ((typeof CONFIG !== 'undefined' && CONFIG.osrm_max_routes) ? CONFIG.osrm_max_routes : 6);
 
-  // Chọn lọc tối đa 6 tuyến ứng viên chất lượng:
-  // Đảm bảo tập hợp luôn có cả tuyến rủi ro thấp nhất (an toàn nhất) và tuyến nhanh nhất
-  if (validRoutes.length > 6) {
+  if (validRoutes.length > maxRoutes) {
     const sortedByRisk = [...validRoutes].sort((a, b) => {
       if (a.riskScore !== b.riskScore) return a.riskScore - b.riskScore;
       return a.duration - b.duration;
     });
     const fastest = [...validRoutes].sort((a, b) => a.duration - b.duration)[0];
-    const pool = sortedByRisk.slice(0, 5);
+    const pool = sortedByRisk.slice(0, maxRoutes - 1);
     if (!pool.some(r => r === fastest)) {
       pool.push(fastest);
     }
     validRoutes = pool;
   }
 
-  return validRoutes.map((route, index) => ({
+  const finalRoutes = validRoutes.map((route, index) => ({
     ...route,
     id: String.fromCharCode(65 + index),
     routeIndex: index,
   }));
+
+  // Tải chi tiết navigation steps (turn-by-turn) cho tuyến đề xuất đầu tiên nếu được bật
+  const finalStepsEnabled = (typeof window !== 'undefined' && window.OSRM_FINAL_STEPS != null) 
+    ? window.OSRM_FINAL_STEPS === true
+    : (typeof CONFIG !== 'undefined' && CONFIG.osrm_final_steps !== false);
+
+  if (finalStepsEnabled && finalRoutes.length > 0) {
+    const topRoute = finalRoutes[0];
+    if (topRoute.waypoints && (!topRoute.legs || !topRoute.legs[0]?.steps?.length)) {
+      try {
+        if (_isDebugRouting()) console.log('[OSRM] final route: Tải turn-by-turn navigation steps cho tuyến đề xuất...');
+        const detailed = await fetchOsrmRoute(topRoute.waypoints, { overview: 'full', steps: true, alternatives: false }, sessionSignal, metrics);
+        if (detailed && detailed.length > 0 && detailed[0].legs) {
+          topRoute.legs = detailed[0].legs;
+        }
+      } catch (_) {}
+    }
+  }
+
+  const endTime = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+  metrics.totalTimeMs = Math.round(endTime - startTime);
+
+  if (_isDebugRouting()) {
+    console.log(`[OSRM Metrics]
+  Requests: ${metrics.requests}
+  Cache hits: ${metrics.cacheHits}
+  In-flight hits: ${metrics.inFlightHits}
+  Candidates: ${metrics.candidates}
+  Unique routes: ${metrics.uniqueRoutes}
+  Total time: ${(metrics.totalTimeMs / 1000).toFixed(2)}s`);
+  }
+
+  return finalRoutes;
 }
 
 /* ---------------------------------------------------------------
@@ -247,7 +618,7 @@ function estimateTransitDuration(distanceKm, type) {
   return Math.round((distanceKm / 70) * 60 + 30);
 }
 
-async function planMultimodalFallback(start, end) {
+async function planMultimodalFallback(start, end, signal = null, metrics = null) {
   const totalDirectDist = haversineKm(start.lat, start.lng, end.lat, end.lng);
   const transitType = totalDirectDist >= 600 ? 'airport' : 'railway';
 
@@ -262,12 +633,12 @@ async function planMultimodalFallback(start, end) {
 
   let roadToOriginHub = null, roadFromDestHub = null;
   try {
-    const routes1 = await fetchOsrmRawRoute([start, originHub]);
+    const routes1 = await fetchOsrmRoute([start, originHub], { overview: 'full', steps: false, alternatives: false }, signal, metrics);
     if (routes1.length) roadToOriginHub = routes1[0];
   } catch (_) {}
 
   try {
-    const routes2 = await fetchOsrmRawRoute([destHub, end]);
+    const routes2 = await fetchOsrmRoute([destHub, end], { overview: 'full', steps: false, alternatives: false }, signal, metrics);
     if (routes2.length) roadFromDestHub = routes2[0];
   } catch (_) {}
 
@@ -479,21 +850,24 @@ function findIncidentsAlongRoute(route) {
   const result = [];
   const incList = (typeof window !== 'undefined' && window.incidents) ? window.incidents : [];
   const confFn = (typeof window !== 'undefined' && window.calculateCurrentConfidence) ? window.calculateCurrentConfidence : (() => 50);
+  const minDistFn = (typeof window !== 'undefined' && window.minDistanceToPolyline) 
+    ? window.minDistanceToPolyline 
+    : (typeof minDistanceToPolyline === 'function' ? minDistanceToPolyline : _minDistanceToPolyline);
   const now = Date.now();
 
   for (const inc of incList) {
     const c = confFn(inc, now);
     if (c <= 0.1) continue;
-    let distM = _minDistanceToPolyline(inc.lat, inc.lng, route.coords);
+    let distM = minDistFn(inc.lat, inc.lng, route.coords);
     if (inc.nodes && inc.nodes.length > 0) {
       for (const node of inc.nodes) {
-        const dN = _minDistanceToPolyline(node.lat, node.lng, route.coords);
+        const dN = minDistFn(node.lat, node.lng, route.coords);
         if (dN < distM) distM = dN;
       }
     }
     if (inc.roadCoords && inc.roadCoords.length >= 2) {
       for (const pt of inc.roadCoords) {
-        const dP = _minDistanceToPolyline(pt[0], pt[1], route.coords);
+        const dP = minDistFn(pt[0], pt[1], route.coords);
         if (dP < distM) distM = dP;
       }
     }
@@ -624,29 +998,138 @@ function _clusterIncidents(activeIncidents) {
 }
 
 /**
- * Loại bỏ các tuyến trùng lặp (khoảng cách và thời gian chênh lệch < 3%)
+ * Lấy chữ ký hình học (Geometry Signature) bằng cách lấy mẫu 15 điểm đều nhau dọc theo polyline,
+ * làm tròn 3 chữ số thập phân (~100m) để nhận diện các tuyến đường đi cùng một hành lang.
+ */
+function _getRouteGeometrySignature(coords, sampleCount = 15) {
+  if (!coords || coords.length === 0) return '';
+  const len = coords.length;
+  if (len <= sampleCount) {
+    return coords.map(p => `${Number(p[0]).toFixed(3)},${Number(p[1]).toFixed(3)}`).join('|');
+  }
+  const samples = [];
+  const step = (len - 1) / (sampleCount - 1);
+  for (let i = 0; i < sampleCount; i++) {
+    const idx = Math.min(len - 1, Math.round(i * step));
+    const p = coords[idx];
+    samples.push(`${Number(p[0]).toFixed(3)},${Number(p[1]).toFixed(3)}`);
+  }
+  return samples.join('|');
+}
+
+/**
+ * Kiểm tra xem hai tuyến đường có trùng lặp về mặt bản chất hình học không:
+ * 1. Khớp hoàn toàn Geometry Signature.
+ * 2. Hoặc sai lệch khoảng cách & thời gian < 2% VÀ độ tương đồng hình học > 85%.
+ */
+function _areRoutesDuplicate(r1, r2) {
+  if (!r1 || !r2) return false;
+  const sig1 = r1._sig || (r1._sig = _getRouteGeometrySignature(r1.coords));
+  const sig2 = r2._sig || (r2._sig = _getRouteGeometrySignature(r2.coords));
+  if (sig1 && sig2 && sig1 === sig2) return true;
+
+  const distDiff = Math.abs(r1.distance - r2.distance) / Math.max(r1.distance, 0.01);
+  const durDiff = Math.abs(r1.duration - r2.duration) / Math.max(r1.duration, 0.01);
+
+  if (distDiff < 0.02 && durDiff < 0.02) {
+    const c1 = r1.coords;
+    const c2 = r2.coords;
+    if (c1 && c2 && c1.length > 5 && c2.length > 5) {
+      let matchedCount = 0;
+      const testSamples = 10;
+      const step = (c1.length - 1) / (testSamples - 1);
+      for (let i = 0; i < testSamples; i++) {
+        const idx = Math.min(c1.length - 1, Math.round(i * step));
+        const p = c1[idx];
+        const minD = minDistanceToPolyline(p[0], p[1], c2);
+        if (minD < 50) matchedCount++;
+      }
+      if (matchedCount / testSamples >= 0.85) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Loại bỏ các tuyến trùng lặp thông minh dựa trên Geometry Signature & Sai số dung sai
  */
 function _deduplicateRoutes(routes) {
   const unique = [];
   for (const r of routes) {
-    const isDup = unique.some(u =>
-      Math.abs(u.distance - r.distance) / Math.max(u.distance, 0.01) < 0.03 &&
-      Math.abs(u.duration - r.duration) / Math.max(u.duration, 0.01) < 0.03
-    );
+    const isDup = unique.some(u => _areRoutesDuplicate(u, r));
     if (!isDup) unique.push(r);
   }
   return unique;
 }
 
 /**
- * Tạo các tuyến tránh sự cố bằng cách phân tích chướng ngại và tính waypoint trung gian.
- * Thuật toán:
- * 1. Thu thập tất cả sự cố nằm trong hành lang ảnh hưởng của các tuyến cơ sở (< 350m).
- * 2. Gom cụm sự cố (clustering).
- * 3. Tính toán các điểm lệch tâm (offset) thích ứng hai bên trái/phải trục đường.
- * 4. Truy vấn OSRM song song (Promise.allSettled) để tìm lộ trình tránh nguy hiểm.
+ * Tính điểm xếp hạng (Ranking Score) cho waypoint ứng viên tránh sự cố:
+ * Phản ánh mức độ hữu ích của waypoint trong việc dẫn đường tránh vùng nguy hiểm.
+ * Yếu tố đánh giá:
+ * 1. Mức độ nghiêm trọng tổng hợp của cụm sự cố (severity, count)
+ * 2. Mức độ đe dọa trực tiếp tới tuyến đường chính (khoảng cách cụm sự cố tới route)
+ * 3. Độ an toàn cự ly né tránh (clearance factor từ waypoint tới tâm cụm)
+ * 4. Hiệu quả lệch trục sơ cấp (primary offset) so với thứ cấp (secondary offset)
  */
-async function _generateAvoidanceRoutes(start, end, baseRoutes) {
+function _scoreAvoidanceWaypoint(wp, primaryRouteCoords) {
+  if (!wp) return 0;
+
+  // Điểm cơ sở cho lệch trục giữa hành trình (Midpoint deflection)
+  if (wp.type === 'midpoint_deflection' || !wp.cluster) {
+    return 0.30;
+  }
+
+  const cluster = wp.cluster;
+  const cSeverity = (typeof cluster.severity === 'number' && Number.isFinite(cluster.severity)) ? cluster.severity : 0.2;
+  const cCount = (typeof cluster.count === 'number' && Number.isFinite(cluster.count)) ? cluster.count : 1;
+
+  // 1. Điểm mức độ nghiêm trọng & quy mô của cụm sự cố
+  const impactScore = Math.min(1.0, 0.35 * cSeverity + 0.1 * Math.min(cCount, 5));
+
+  // 2. Mức độ đe dọa trực tiếp tới tuyến đường chính
+  const minDistFn = (typeof window !== 'undefined' && window.minDistanceToPolyline) 
+    ? window.minDistanceToPolyline 
+    : (typeof minDistanceToPolyline === 'function' ? minDistanceToPolyline : _minDistanceToPolyline);
+
+  let routeThreatFactor = 0.5;
+  if (primaryRouteCoords && primaryRouteCoords.length >= 2) {
+    const distToRoute = minDistFn(cluster.lat, cluster.lng, primaryRouteCoords);
+    const strongThresh = (typeof CONFIG !== 'undefined' && CONFIG.risk_impact?.STRONG_THRESHOLD_M) ? CONFIG.risk_impact.STRONG_THRESHOLD_M : 100;
+    const medThresh = (typeof CONFIG !== 'undefined' && CONFIG.risk_impact?.MEDIUM_THRESHOLD_M) ? CONFIG.risk_impact.MEDIUM_THRESHOLD_M : 300;
+
+    if (distToRoute < strongThresh) {
+      routeThreatFactor = 1.0;
+    } else if (distToRoute < medThresh) {
+      routeThreatFactor = 0.75;
+    }
+  }
+
+  // 3. Khả năng né tránh (clearance): khoảng cách từ waypoint tới tâm cụm sự cố
+  const distToClusterM = haversineKm(wp.lat, wp.lng, cluster.lat, cluster.lng) * 1000;
+  const clearanceFactor = Math.min(1.0, distToClusterM / Math.max(wp.offset || 400, 200));
+
+  // 4. Ưu tiên độ lệch sơ cấp (primary offset) hơn độ lệch thứ cấp
+  const offsetEfficiency = wp.isPrimaryOffset ? 1.0 : 0.85;
+
+  // Tổng hợp điểm số trong đoạn [0, 1]
+  const totalScore = (impactScore * 0.45) + (routeThreatFactor * 0.30) + (clearanceFactor * 0.15) + (offsetEfficiency * 0.10);
+  return Math.round(totalScore * 10000) / 10000;
+}
+
+/**
+ * Tạo các tuyến tránh sự cố tối ưu:
+ * 1. Thu thập sự cố ảnh hưởng (< 350m từ các tuyến cơ sở)
+ * 2. Gom cụm sự cố (Clustering) và chọn tối đa 2 cụm nghiêm trọng nhất
+ * 3. Sinh waypoint lệch trục (vuông góc & midpoint deflection)
+ * 4. Xếp hạng waypoint (Waypoint Ranking) dựa trên mức độ nguy hiểm cần tránh
+ * 5. Sắp xếp giảm dần theo điểm số + tie-breaker tất định (deterministic)
+ * 6. Khử trùng waypoint (< 250m) và chọn lọc tối đa OSRM_MAX_WAYPOINTS tốt nhất
+ * 7. Truy vấn OSRM qua bộ điều phối tải Concurrency Limiter
+ */
+async function _generateAvoidanceRoutes(start, end, baseRoutes, signal = null, metrics = null) {
   if (!baseRoutes.length) return [];
 
   const incList = (typeof window !== 'undefined' && window.incidents) ? window.incidents : (typeof incidents !== 'undefined' ? incidents : []);
@@ -664,7 +1147,6 @@ async function _generateAvoidanceRoutes(start, end, baseRoutes) {
       const d = minDistFn(inc.lat, inc.lng, r.coords);
       if (d < minD) minD = d;
     }
-    // Nếu sự cố nằm trong phạm vi 350m từ tim đường
     if (minD < 350) {
       activeIncidents.push({
         incident: inc,
@@ -675,39 +1157,37 @@ async function _generateAvoidanceRoutes(start, end, baseRoutes) {
     }
   }
 
-  // Nếu không có bất kỳ sự cố nào ảnh hưởng, tuyến đường đã an toàn
   if (activeIncidents.length === 0) return [];
 
   // Gom cụm sự cố
   const clusters = _clusterIncidents(activeIncidents);
-
-  // Khoảng cách chim bay giữa điểm xuất phát và điểm đến
   const directDistM = haversineKm(start.lat, start.lng, end.lat, end.lng) * 1000;
 
-  // Khoảng cách offset thích ứng theo độ dài chuyến đi:
-  // - Chuyến ngắn nội thành (1-3km): lệch 300m - 800m
-  // - Chuyến trung bình (3-15km): lệch 600m - 1800m
-  // - Chuyến dài (>15km): lệch 1200m - 3000m
-  const baseOffsets = [
-    Math.max(300, Math.min(800, Math.round(directDistM * 0.25))),
-    Math.max(600, Math.min(1800, Math.round(directDistM * 0.50))),
-    Math.max(1000, Math.min(3000, Math.round(directDistM * 0.80)))
-  ].filter((v, i, a) => a.indexOf(v) === i);
+  // Tính khoảng cách offset thích ứng theo cự ly
+  const primaryOffset = Math.max(400, Math.min(1500, Math.round(directDistM * 0.35)));
+  const secondaryOffset = Math.max(700, Math.min(2500, Math.round(directDistM * 0.60)));
+  const offsets = [primaryOffset, secondaryOffset].filter((v, i, a) => a.indexOf(v) === i);
 
   const candidateWaypoints = [];
   const primaryRouteCoords = baseRoutes[0].coords;
 
-  // 1. Tạo waypoints vuông góc với từng cluster sự cố (cả 2 bên trái & phải)
-  for (const cluster of clusters.slice(0, 3)) {
-    for (const offset of baseOffsets) {
+  // 1. Tạo waypoints từ 2 cụm sự cố nghiêm trọng nhất (mỗi bên trái & phải)
+  for (const cluster of clusters.slice(0, 2)) {
+    for (const offset of offsets) {
       const pair = _computeAvoidanceWaypoints(primaryRouteCoords, cluster.lat, cluster.lng, offset);
       for (const wp of pair) {
         if (wp && isPointInVietnam(wp.lat, wp.lng)) {
-          // Tránh đặt waypoint quá sát điểm đầu hoặc điểm cuối (< 150m)
           const dStart = haversineKm(start.lat, start.lng, wp.lat, wp.lng) * 1000;
           const dEnd = haversineKm(end.lat, end.lng, wp.lat, wp.lng) * 1000;
-          if (dStart > 150 && dEnd > 150) {
-            candidateWaypoints.push(wp);
+          if (dStart > 200 && dEnd > 200) {
+            candidateWaypoints.push({
+              lat: wp.lat,
+              lng: wp.lng,
+              cluster: cluster,
+              offset: offset,
+              isPrimaryOffset: (offset === primaryOffset),
+              type: 'cluster_avoidance'
+            });
           }
         }
       }
@@ -717,33 +1197,83 @@ async function _generateAvoidanceRoutes(start, end, baseRoutes) {
   // 2. Tạo waypoint lệch sườn giữa hành trình (Midpoint deflection)
   const midBearing = _bearingRad(start.lat, start.lng, end.lat, end.lng);
   const midPoint = _destinationPoint(start.lat, start.lng, midBearing, directDistM / 2);
-  const midOffsets = [
-    Math.max(400, Math.min(1500, Math.round(directDistM * 0.35))),
-    Math.max(800, Math.min(2500, Math.round(directDistM * 0.65)))
-  ];
-  for (const offset of midOffsets) {
-    const leftMid = _destinationPoint(midPoint.lat, midPoint.lng, midBearing + Math.PI / 2, offset);
-    const rightMid = _destinationPoint(midPoint.lat, midPoint.lng, midBearing - Math.PI / 2, offset);
-    if (isPointInVietnam(leftMid.lat, leftMid.lng)) candidateWaypoints.push(leftMid);
-    if (isPointInVietnam(rightMid.lat, rightMid.lng)) candidateWaypoints.push(rightMid);
+  const leftMid = _destinationPoint(midPoint.lat, midPoint.lng, midBearing + Math.PI / 2, primaryOffset);
+  const rightMid = _destinationPoint(midPoint.lat, midPoint.lng, midBearing - Math.PI / 2, primaryOffset);
+  if (isPointInVietnam(leftMid.lat, leftMid.lng)) {
+    candidateWaypoints.push({
+      lat: leftMid.lat,
+      lng: leftMid.lng,
+      cluster: null,
+      offset: primaryOffset,
+      isPrimaryOffset: true,
+      type: 'midpoint_deflection'
+    });
+  }
+  if (isPointInVietnam(rightMid.lat, rightMid.lng)) {
+    candidateWaypoints.push({
+      lat: rightMid.lat,
+      lng: rightMid.lng,
+      cluster: null,
+      offset: primaryOffset,
+      isPrimaryOffset: true,
+      type: 'midpoint_deflection'
+    });
   }
 
-  // 3. Khử bớt waypoint trùng hoặc quá gần nhau (< 200m)
+  if (candidateWaypoints.length === 0) return [];
+
+  // 3. Tính điểm xếp hạng (Ranking Score) cho từng ứng viên waypoint
+  for (const wp of candidateWaypoints) {
+    wp.score = _scoreAvoidanceWaypoint(wp, primaryRouteCoords);
+  }
+
+  // 4. Sắp xếp giảm dần theo điểm số (với deterministic tie-breaker theo tọa độ để đảm bảo tính tất định)
+  candidateWaypoints.sort((a, b) => {
+    // 4.1 Điểm số cao hơn đứng trước
+    if (Math.abs(b.score - a.score) > 1e-5) {
+      return b.score - a.score;
+    }
+    // 4.2 Deterministic tie-breaker 1: Vĩ độ (chống random)
+    if (Math.abs(b.lat - a.lat) > 1e-6) {
+      return b.lat - a.lat;
+    }
+    // 4.3 Deterministic tie-breaker 2: Kinh độ
+    return b.lng - a.lng;
+  });
+
+  // 5. Khử bớt waypoint trùng hoặc quá gần nhau (< 250m), giữ lại ứng viên có điểm cao hơn
   const uniqueWps = [];
   for (const wp of candidateWaypoints) {
-    const isClose = uniqueWps.some(u => haversineKm(u.lat, u.lng, wp.lat, wp.lng) * 1000 < 200);
+    const isClose = uniqueWps.some(u => haversineKm(u.lat, u.lng, wp.lat, wp.lng) * 1000 < 250);
     if (!isClose) uniqueWps.push(wp);
   }
 
-  // 4. Lấy tối đa 8 waypoints triển vọng nhất và truy vấn OSRM đồng thời
-  const targetWps = uniqueWps.slice(0, 8);
-  const promises = targetWps.map(wp =>
-    fetchOsrmRawRoute([start, wp, end])
-      .then(routes => routes.filter(r => isRouteInsideVietnam(r)))
-      .catch(() => [])
-  );
+  // 6. Giới hạn số lượng waypoint tối đa theo cấu hình (mặc định 4)
+  const maxWps = (typeof window !== 'undefined' && window.OSRM_MAX_WAYPOINTS)
+    ? window.OSRM_MAX_WAYPOINTS
+    : ((typeof CONFIG !== 'undefined' && CONFIG.osrm_max_waypoints) ? CONFIG.osrm_max_waypoints : 4);
+  const targetWps = uniqueWps.slice(0, maxWps);
 
-  const results = await Promise.allSettled(promises);
+  if (_isDebugRouting()) {
+    console.log(`[OSRM] waypoint ranking: ${candidateWaypoints.length} candidates -> ${uniqueWps.length} unique -> selected top ${targetWps.length} (scores: ${targetWps.map(w => w.score).join(', ')})`);
+  }
+
+  // 7. Concurrency Limiter: Truy vấn OSRM có kiểm soát tốc độ (mặc định tối đa 3 đồng thời)
+  const concurrentLimit = (typeof window !== 'undefined' && window.OSRM_MAX_CONCURRENT_REQUESTS)
+    ? window.OSRM_MAX_CONCURRENT_REQUESTS
+    : ((typeof CONFIG !== 'undefined' && CONFIG.osrm_max_concurrent_requests) ? CONFIG.osrm_max_concurrent_requests : 3);
+
+  const results = await mapConcurrent(targetWps, concurrentLimit, async wp => {
+    if (signal && signal.aborted) return [];
+    const segRoutes = await fetchOsrmRoute(
+      [start, wp, end],
+      { overview: 'full', steps: false, alternatives: false },
+      signal,
+      metrics
+    );
+    return segRoutes.filter(r => isRouteInsideVietnam(r));
+  });
+
   const avoidanceRoutes = [];
   for (const res of results) {
     if (res.status === 'fulfilled' && Array.isArray(res.value)) {
@@ -1081,12 +1611,31 @@ function chooseRoute(id) {
   if (typeof window !== 'undefined') {
     window.selectedRouteId = id;
     window.manualRouteSelection = true;
+
+    // Tải turn-by-turn steps theo yêu cầu nếu tuyến này chưa có
+    const finalStepsEnabled = (typeof window !== 'undefined' && window.OSRM_FINAL_STEPS != null) 
+      ? window.OSRM_FINAL_STEPS === true
+      : (typeof CONFIG !== 'undefined' && CONFIG.osrm_final_steps !== false);
+
+    if (finalStepsEnabled && target.waypoints && (!target.legs || !target.legs[0]?.steps?.length)) {
+      fetchOsrmRoute(target.waypoints, { overview: 'full', steps: true, alternatives: false })
+        .then(stepRoutes => {
+          if (stepRoutes && stepRoutes.length > 0 && stepRoutes[0].legs) {
+            target.legs = stepRoutes[0].legs;
+            if (window.selectedRouteId === id) {
+              renderRoutes(currentRoutes, window.selectedMode || 'balanced');
+            }
+          }
+        })
+        .catch(() => {});
+    }
+
     renderRoutes(currentRoutes, window.selectedMode || 'balanced');
     if (typeof window.showToast === 'function') window.showToast(`Đã chọn Tuyến ${id}. Bắt đầu chỉ đường...`);
   }
 }
 
-// Gắn lên window
+// Gắn lên window để truy cập từ script truyền thống trên trình duyệt
 if (typeof window !== 'undefined') {
   window.findSafeRoutes = findSafeRoutes;
   window.calculateRouteRisk = calculateRouteRisk;
@@ -1099,4 +1648,38 @@ if (typeof window !== 'undefined') {
   window.showMultimodalOption = showMultimodalOption;
   window.backToRoadRoutes = backToRoadRoutes;
   window.switchToSaferMode = switchToSaferMode;
+
+  // Exports phục vụ OSRM Optimization, Cache & Testing
+  window.RouteCache = RouteCache;
+  window.osrmRouteCache = osrmRouteCache;
+  window.inFlightRequests = inFlightRequests;
+  window.fetchOsrmRoute = fetchOsrmRoute;
+  window.fetchOsrmRawRoute = fetchOsrmRawRoute;
+  window.mapConcurrent = mapConcurrent;
+  window._scoreAvoidanceWaypoint = _scoreAvoidanceWaypoint;
+  window.clearRouteCache = () => osrmRouteCache.clear();
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    findSafeRoutes,
+    calculateRouteRisk,
+    findIncidentsAlongRoute,
+    sortRoutesByMode,
+    renderRoutes,
+    chooseRoute,
+    renderTransportFallback,
+    planMultimodalFallback,
+    showMultimodalOption,
+    backToRoadRoutes,
+    switchToSaferMode,
+    RouteCache,
+    osrmRouteCache,
+    inFlightRequests,
+    fetchOsrmRoute,
+    fetchOsrmRawRoute,
+    mapConcurrent,
+    _scoreAvoidanceWaypoint,
+    clearRouteCache: () => osrmRouteCache.clear()
+  };
 }

@@ -169,6 +169,15 @@
       _cleanupExpiredIncidents();
       const routes = await _findSafeRoutes(currentStart, activeEnd);
 
+      // Đảm bảo không bị race condition nếu người dùng đã đổi điểm đi/đến trong khi đang tìm kiếm
+      const latestStart = (typeof window !== 'undefined') ? window.startLocation : null;
+      const latestEnd = (typeof window !== 'undefined') ? window.endLocation : null;
+      if (latestStart && latestEnd && 
+          (latestStart.lat !== currentStart.lat || latestStart.lng !== currentStart.lng || 
+           latestEnd.lat !== activeEnd.lat || latestEnd.lng !== activeEnd.lng)) {
+        return;
+      }
+
       if (routes.length === 0) {
         const fallbackResult = (typeof window !== 'undefined') ? window.transportFallback : transportFallback;
         if (fallbackResult) {

@@ -86,7 +86,21 @@ const CONFIG = {
   k_shortest: 3,
 
   // Màu sắc phân biệt các tuyến đường trên bản đồ
-  route_colors: ['#2f7ee0', '#f08a1c', '#12b76a', '#8a4fe0', '#e3492c']
+  route_colors: ['#2f7ee0', '#f08a1c', '#12b76a', '#8a4fe0', '#e3492c'],
+
+  // ==============================================================
+  // CẤU HÌNH TỐI ƯU HÓA OSRM ROUTING ENGINE
+  // ==============================================================
+  osrm_timeout_ms: 8000,                // Timeout mỗi request OSRM (8 giây)
+  osrm_cache_ttl_ms: 180000,            // TTL lưu cache hình học OSRM (3 phút = 180.000 ms)
+  osrm_cache_max_entries: 100,          // Giới hạn số lượng entries trong cache (LRU)
+  osrm_max_concurrent_requests: 3,      // Giới hạn số request OSRM đồng thời tối đa
+  osrm_max_waypoints: 4,                // Giới hạn số lượng waypoint tránh sự cố tối đa
+  osrm_max_routes: 6,                   // Giới hạn số lượng tuyến ứng viên đưa vào chấm điểm
+  osrm_enable_alternatives: true,       // Bật alternatives cho tuyến cơ sở base route
+  osrm_candidate_steps: false,          // Tắt turn-by-turn steps cho các tuyến ứng viên (giảm payload)
+  osrm_final_steps: true,               // Bật turn-by-turn steps cho tuyến được chọn hiển thị
+  debug_routing: false                  // Tắt chế độ debug log và metrics hiệu năng routing (mặc định production)
 };
 
 // Cấu hình kiểu hiển thị mặc định theo từng loại sự cố (point vs segment)
@@ -107,6 +121,18 @@ const INCIDENT_TYPE_WEIGHT = CONFIG.incident_type_weight;
 const INCIDENT_LEVEL_WEIGHT = CONFIG.incident_level_weight;
 const INCIDENT_DECAY_CONFIG = CONFIG.decay;
 const ROUTE_COLORS = CONFIG.route_colors;
+
+// Aliases cho cấu hình OSRM
+const OSRM_TIMEOUT = CONFIG.osrm_timeout_ms || 8000;
+const OSRM_CACHE_TTL = CONFIG.osrm_cache_ttl_ms || 180000;
+const OSRM_CACHE_MAX_ENTRIES = CONFIG.osrm_cache_max_entries || 100;
+const OSRM_MAX_CONCURRENT_REQUESTS = CONFIG.osrm_max_concurrent_requests || 3;
+const OSRM_MAX_WAYPOINTS = CONFIG.osrm_max_waypoints || 4;
+const OSRM_MAX_ROUTES = CONFIG.osrm_max_routes || 6;
+const OSRM_ENABLE_ALTERNATIVES = CONFIG.osrm_enable_alternatives !== false;
+const OSRM_CANDIDATE_STEPS = CONFIG.osrm_candidate_steps === true;
+const OSRM_FINAL_STEPS = CONFIG.osrm_final_steps !== false;
+const DEBUG_ROUTING = CONFIG.debug_routing === true;
 
 /**
  * Định nghĩa metadata trực quan và renderMode cho từng loại sự cố
@@ -181,17 +207,78 @@ const distanceMeters = haversineMeters;
 
 /**
  * Tìm khoảng cách nhỏ nhất từ 1 điểm đến một đường polyline (mảng [lat, lng])
- * @param {number} lat 
- * @param {number} lng 
- * @param {Array<[number, number]>} coords 
- * @returns {number} Mét
+ * Sử dụng hình chiếu trực giao vuông góc lên từng đoạn thẳng (point-to-segment)
+ * kết hợp kẹp tỷ lệ t trong [0, 1] để đo khoảng cách chính xác ngay cả khi điểm
+ * nằm ở khoảng giữa hai đỉnh thẳng hàng.
+ * @param {number} lat - Vĩ độ điểm cần đo
+ * @param {number} lng - Kinh độ điểm cần đo
+ * @param {Array<[number, number]>} coords - Mảng các đỉnh của polyline [[lat, lng], ...]
+ * @returns {number} Khoảng cách nhỏ nhất tính bằng mét (trả về Infinity nếu dữ liệu không hợp lệ)
  */
 function minDistanceToPolyline(lat, lng, coords) {
-  let min = Infinity;
-  for (const c of coords) {
-    const d = haversineMeters(lat, lng, c[0], c[1]);
-    if (d < min) min = d;
+  if (!isValidCoordinate(lat, lng)) return Infinity;
+  if (!coords || !Array.isArray(coords) || coords.length === 0) return Infinity;
+
+  // Trường hợp chỉ có đúng 1 điểm đỉnh: tính khoảng cách thẳng đến đỉnh đó
+  if (coords.length === 1) {
+    const p0 = coords[0];
+    if (!p0 || !isValidCoordinate(p0[0], p0[1])) return Infinity;
+    return haversineMeters(lat, lng, p0[0], p0[1]);
   }
+
+  let min = Infinity;
+  const rad = Math.PI / 180;
+  // Hệ số chiếu cục bộ: vĩ độ trung bình bù trừ độ co kinh tuyến WGS84
+  const cosLat = Math.cos(lat * rad);
+  const METERS_PER_DEG_LAT = 111132.95; // 1 độ vĩ ≈ 111.133 km
+  const METERS_PER_DEG_LNG = 111412.84 * cosLat; // 1 độ kinh tại vĩ độ lat
+
+  for (let i = 0; i < coords.length - 1; i++) {
+    const p1 = coords[i];
+    const p2 = coords[i + 1];
+    if (!p1 || !p2 || !isValidCoordinate(p1[0], p1[1]) || !isValidCoordinate(p2[0], p2[1])) {
+      continue;
+    }
+
+    // Chuyển p1, p2 sang tọa độ mét cục bộ lấy điểm (lat, lng) làm gốc (0, 0)
+    const x1 = (p1[1] - lng) * METERS_PER_DEG_LNG;
+    const y1 = (p1[0] - lat) * METERS_PER_DEG_LAT;
+    const x2 = (p2[1] - lng) * METERS_PER_DEG_LNG;
+    const y2 = (p2[0] - lat) * METERS_PER_DEG_LAT;
+
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const segLenSq = dx * dx + dy * dy;
+
+    let dist;
+    if (segLenSq < 1e-6) {
+      // Đoạn thẳng 2 đầu mút trùng nhau
+      dist = Math.hypot(x1, y1);
+    } else {
+      // Vector từ p1 tới điểm (0, 0) là (-x1, -y1)
+      // Tỷ lệ hình chiếu t trên đoạn thẳng: t = - (x1 * dx + y1 * dy) / segLenSq
+      const t = Math.max(0, Math.min(1, -(x1 * dx + y1 * dy) / segLenSq));
+      const projX = x1 + t * dx;
+      const projY = y1 + t * dy;
+      dist = Math.hypot(projX, projY);
+    }
+
+    if (dist < min) {
+      min = dist;
+      if (min === 0) return 0;
+    }
+  }
+
+  // Fallback: Nếu không có đoạn thẳng hợp lệ nào được tính, thử so sánh với các đỉnh đơn lẻ
+  if (!Number.isFinite(min)) {
+    for (const c of coords) {
+      if (c && isValidCoordinate(c[0], c[1])) {
+        const d = haversineMeters(lat, lng, c[0], c[1]);
+        if (d < min) min = d;
+      }
+    }
+  }
+
   return min;
 }
 
@@ -252,6 +339,18 @@ if (typeof window !== 'undefined') {
   window.minDistanceToPolyline = minDistanceToPolyline;
   window.formatRelativeTime = formatRelativeTime;
   window.formatDateTime = formatDateTime;
+
+  // OSRM constants
+  window.OSRM_TIMEOUT = OSRM_TIMEOUT;
+  window.OSRM_CACHE_TTL = OSRM_CACHE_TTL;
+  window.OSRM_CACHE_MAX_ENTRIES = OSRM_CACHE_MAX_ENTRIES;
+  window.OSRM_MAX_CONCURRENT_REQUESTS = OSRM_MAX_CONCURRENT_REQUESTS;
+  window.OSRM_MAX_WAYPOINTS = OSRM_MAX_WAYPOINTS;
+  window.OSRM_MAX_ROUTES = OSRM_MAX_ROUTES;
+  window.OSRM_ENABLE_ALTERNATIVES = OSRM_ENABLE_ALTERNATIVES;
+  window.OSRM_CANDIDATE_STEPS = OSRM_CANDIDATE_STEPS;
+  window.OSRM_FINAL_STEPS = OSRM_FINAL_STEPS;
+  window.DEBUG_ROUTING = DEBUG_ROUTING;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -274,6 +373,16 @@ if (typeof module !== 'undefined' && module.exports) {
     distanceMeters,
     minDistanceToPolyline,
     formatRelativeTime,
-    formatDateTime
+    formatDateTime,
+    OSRM_TIMEOUT,
+    OSRM_CACHE_TTL,
+    OSRM_CACHE_MAX_ENTRIES,
+    OSRM_MAX_CONCURRENT_REQUESTS,
+    OSRM_MAX_WAYPOINTS,
+    OSRM_MAX_ROUTES,
+    OSRM_ENABLE_ALTERNATIVES,
+    OSRM_CANDIDATE_STEPS,
+    OSRM_FINAL_STEPS,
+    DEBUG_ROUTING
   };
 }

@@ -76,13 +76,19 @@ function cleanupExpiredIncidents() {
 // Chạy định kỳ dọn dẹp decay mỗi 60 giây
 setInterval(cleanupExpiredIncidents, 60 * 1000);
 
-const DEBUG_MERGE = true;
+function _isDebugMerge() {
+  return (typeof window !== 'undefined' && window.DEBUG_MERGE != null)
+    ? window.DEBUG_MERGE === true
+    : ((typeof window !== 'undefined' && window.DEBUG_ROUTING != null)
+      ? window.DEBUG_ROUTING === true
+      : (typeof CONFIG !== 'undefined' && CONFIG.debug_routing === true));
+}
 
 /**
  * Ghi log debug quá trình gộp node sự cố
  */
 function logMergeDebug(info) {
-  if (DEBUG_MERGE && typeof console !== 'undefined' && console.debug) {
+  if (_isDebugMerge() && typeof console !== 'undefined' && console.debug) {
     console.debug('[SafeRoute][MERGE]', {
       distance: info.distance != null ? Math.round(info.distance * 10) / 10 : null,
       roadNameA: info.roadNameA || '(không rõ)',
