@@ -1,0 +1,203 @@
+{
+  "type": "FeatureCollection",
+  "name": "vietnam-hcm-roads",
+  "crs": {
+    "type": "name",
+    "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Đường Lê Lợi (Chợ Bến Thành - Nhà hát Thành phố)",
+        "highway": "primary",
+        "oneway": "no",
+        "maxspeed": "50"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [106.69800, 10.77250],
+          [106.69950, 10.77380],
+          [106.70150, 10.77550],
+          [106.70320, 10.77680]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Phố đi bộ Nguyễn Huệ",
+        "highway": "pedestrian",
+        "oneway": "no",
+        "maxspeed": "30"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [106.70100, 10.77180],
+          [106.70320, 10.77680],
+          [106.70450, 10.77950]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Đường Đồng Khởi",
+        "highway": "secondary",
+        "oneway": "yes",
+        "maxspeed": "40"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [106.70450, 10.77950],
+          [106.70320, 10.77680],
+          [106.70650, 10.77350]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Đường Pasteur",
+        "highway": "secondary",
+        "oneway": "yes",
+        "maxspeed": "40"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [106.69950, 10.77380],
+          [106.69800, 10.77600],
+          [106.69650, 10.77850],
+          [106.69500, 10.78150]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Đường Nam Kỳ Khởi Nghĩa",
+        "highway": "primary",
+        "oneway": "yes",
+        "maxspeed": "50"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [106.69500, 10.78150],
+          [106.69700, 10.77820],
+          [106.69950, 10.77380],
+          [106.70120, 10.77050]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Đường Lê Duẩn",
+        "highway": "primary",
+        "oneway": "no",
+        "maxspeed": "50"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [106.69500, 10.78150],
+          [106.69850, 10.77980],
+          [106.70450, 10.77950],
+          [106.70680, 10.78300]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Đường Nguyễn Thị Minh Khai",
+        "highway": "primary",
+        "oneway": "yes",
+        "maxspeed": "50"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [106.69100, 10.77650],
+          [106.69650, 10.77850],
+          [106.69850, 10.77980],
+          [106.70500, 10.78500]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Đường Cách Mạng Tháng 8",
+        "highway": "primary",
+        "oneway": "no",
+        "maxspeed": "40"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [106.69800, 10.77250],
+          [106.69350, 10.77450],
+          [106.69100, 10.77650],
+          [106.68800, 10.77900]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Đường Nguyễn Du",
+        "highway": "secondary",
+        "oneway": "yes",
+        "maxspeed": "35"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [106.69350, 10.77450],
+          [106.69700, 10.77820],
+          [106.70150, 10.77550]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Đường Hàm Nghi",
+        "highway": "primary",
+        "oneway": "no",
+        "maxspeed": "50"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [106.69800, 10.77250],
+          [106.70120, 10.77050],
+          [106.70500, 10.76800]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Đường Tôn Đức Thắng (Bến Bạch Đằng)",
+        "highway": "primary",
+        "oneway": "no",
+        "maxspeed": "60"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [106.70500, 10.76800],
+          [106.70650, 10.77350],
+          [106.70680, 10.78300]
+        ]
+      }
+    }
+  ]
+}

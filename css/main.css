@@ -141,7 +141,7 @@ input,select,textarea{font-family:inherit;}
 
 /* ---- Nút hành động trong ô địa điểm (GPS) ---- */
 .location-action-btn{
-  flex:0 0 auto;
+  flex:0 0 auto;position:relative;z-index:3;cursor:pointer;
   width:30px;height:30px;border-radius:50%;
   border:1px solid var(--border);background:var(--surface);
   display:flex;align-items:center;justify-content:center;
@@ -190,8 +190,20 @@ input,select,textarea{font-family:inherit;}
 }
 .start-marker-icon i{transform:rotate(45deg);}
 
+/* ---- Marker điểm đến (giọt nước đỏ tươi, viền trắng, cờ caro) ---- */
+.end-marker-icon{
+  width:36px;height:36px;
+  display:flex;align-items:center;justify-content:center;
+  color:#fff;font-size:15px;
+  background:linear-gradient(155deg,#ef4444,#dc2626);
+  border:3px solid #fff;border-radius:50% 50% 50% 0;
+  transform:rotate(-45deg);
+  box-shadow:0 4px 10px rgba(220,38,38,.45);
+}
+.end-marker-icon i{transform:rotate(45deg);}
+
 .swap-btn{
-  position:absolute;right:10px;top:38px;
+  position:absolute;right:10px;top:44px;z-index:2;
   width:30px;height:30px;border-radius:50%;
   background:var(--surface);border:1px solid var(--border);
   display:flex;align-items:center;justify-content:center;
@@ -302,7 +314,7 @@ input,select,textarea{font-family:inherit;}
 
 /* Floating report button */
 #report-fab{
-  position:absolute;bottom:20px;right:20px;z-index:800;
+  position:absolute;bottom:20px;right:20px;z-index:1100;
   background:var(--text);color:#fff;border:none;
   padding:13px 20px;border-radius:999px;
   font-size:14px;font-weight:700;
