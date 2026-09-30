@@ -165,6 +165,24 @@
         setFindButtonLoading(true, 'Đang tìm tuyến đường...');
       }
 
+      // Lớp bảo vệ cuối (defense in depth): điểm bắt đầu và điểm đến phải nằm trên đất liền.
+      // Chặn mọi đường bypass: autocomplete Nominatim, fallback geocoding khi gõ chữ,
+      // GPS sai, hoặc code gọi setEndLocation trực tiếp.
+      if (!_isValidCoordinate(activeEnd.lat, activeEnd.lng)) {
+        _showToast('Tọa độ điểm đến không hợp lệ.');
+        return;
+      }
+      if (typeof window !== 'undefined' && typeof window.isPointClearlyAtSea === 'function') {
+        if (window.isPointClearlyAtSea(currentStart.lat, currentStart.lng)) {
+          _showToast('Điểm bắt đầu nằm ngoài lãnh thổ Việt Nam (trên biển). Vui lòng chọn lại.');
+          return;
+        }
+        if (window.isPointClearlyAtSea(activeEnd.lat, activeEnd.lng)) {
+          _showToast('Điểm đến nằm ngoài lãnh thổ Việt Nam (trên biển). Vui lòng chọn điểm trên đất liền.');
+          return;
+        }
+      }
+
       const dist = _haversineMeters(currentStart.lat, currentStart.lng, activeEnd.lat, activeEnd.lng);
       if (dist < 50) {
         _showToast('Điểm bắt đầu và điểm đến quá gần nhau (cùng 1 vị trí).');

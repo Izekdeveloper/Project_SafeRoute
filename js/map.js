@@ -260,6 +260,21 @@ function updateEndMarker(lat, lng, label) {
  */
 function selectEndFromMap(latlng) {
   const { lat, lng } = latlng;
+
+  // Chặn sớm tại UX: điểm đến phải nằm trên đất liền VN, không nằm trên biển.
+  // Nếu không chặn, OSRM sẽ snap điểm giữa biển về bờ gần nhất và trả về tuyến "ảo"
+  // trong khi marker vẫn đứng giữa biển.
+  // Dùng isPointClearlyAtSea (ngoài đa giác + cách bờ > 40km) để không chặn nhầm
+  // các điểm đất liền ven biển mà đa giác xấp xỉ có thể loại nhầm.
+  if (typeof window !== 'undefined' && typeof window.isPointClearlyAtSea === 'function') {
+    if (window.isPointClearlyAtSea(lat, lng)) {
+      if (typeof window.showToast === 'function') {
+        window.showToast('Vị trí này nằm ngoài lãnh thổ Việt Nam (trên biển). Vui lòng chọn điểm trên đất liền.');
+      }
+      return; // Không đặt marker, không gọi reverse geocode
+    }
+  }
+
   const fallback = lat.toFixed(5) + ', ' + lng.toFixed(5);
   setEndLocation(lat, lng, fallback, 'map');
   reverseGeocodeEndLabel(lat, lng);

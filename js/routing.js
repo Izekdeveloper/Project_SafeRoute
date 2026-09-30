@@ -32,7 +32,7 @@ const VIETNAM_MAINLAND_POLYGON = [
   [23.00, 105.90], [22.95, 106.15], [22.88, 106.50], [22.75, 106.75], [22.50, 106.80],
   [22.25, 106.55], [21.88, 106.82], [21.65, 107.05], [21.55, 107.30], [21.55, 107.50],
   [21.53, 107.97],
-  // Bờ biển phía Đông (Quảng Ninh đến Cà Mau) - có đệm biển 5-15km
+  // Bờ biển phía Đông (Quảng Ninh đến Cà Mau) - đệm biển 5-15km (độ phân giải thấp, không chính xác)
   [21.55, 108.10], [21.20, 108.05], [20.75, 107.30], [20.50, 106.90], [20.00, 106.60],
   [19.50, 106.20], [19.00, 106.10], [18.30, 106.50], [17.80, 106.85], [17.10, 107.40],
   [16.80, 107.75], [16.40, 108.05], [16.15, 108.50], [15.80, 108.70], [15.30, 109.05],
@@ -62,6 +62,16 @@ const PHU_QUOC_POLYGON = [
   [9.95, 103.80], [10.50, 103.80], [10.50, 104.20], [9.95, 104.20]
 ];
 
+/**
+ * Kiểm tra một tọa độ có nằm bên trong đa giác hay không (thuật toán ray-casting).
+ * Lưu ý: đa giác được xác định theo cặp [lat, lng].
+ * Lưu ý 2: bản cài đặt KHÔNG coi điểm nằm đúng trên cạnh là "bên trong".
+ *
+ * @param {number} lat - Vĩ độ cần kiểm tra.
+ * @param {number} lng - Kinh độ cần kiểm tra.
+ * @param {Array<[number, number]>} polygon - Danh sách đỉnh [lat, lng] của đa giác.
+ * @returns {boolean} true nếu tọa độ nằm bên trong đa giác.
+ */
 function pointInPolygon(lat, lng, polygon) {
   let inside = false;
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
@@ -74,9 +84,93 @@ function pointInPolygon(lat, lng, polygon) {
   return inside;
 }
 
+/**
+ * Kiểm tra một tọa độ có nằm trong lãnh thổ Việt Nam hay không
+ * (đất liền + đảo Phú Quốc, dựa trên đa giác xấp xỉ ~113 đỉnh).
+ *
+ * Dùng để chặn điểm bắt đầu / điểm đến nằm trên biển, tránh OSRM snap-to-road
+ * tạo ra tuyến đường "ảo" kết thúc ở bờ biển.
+ *
+ * Hạn chế đã biết (độ phân giải của đa giác thấp, SAI CẢ HAI CHIỀU):
+ *  - Chặn oan một số điểm trên đất liền: Quảng Ngãi, Cửa Lò, Móng Cái, Cô Tô.
+ *  - Vẫn chấp nhận vùng biển Vịnh Thái Lan / phía Nam sông Cửu Long
+ *    (ví dụ 9.0,105.5 cách bờ hơn 100km vẫn trả về true).
+ *  - Đảo bị chặn oan: Lý Sơn, Phú Quý. (Côn Đảo nằm trong đa giác đất liền.)
+ *
+ * @param {number} lat - Vĩ độ cần kiểm tra.
+ * @param {number} lng - Kinh độ cần kiểm tra.
+ * @returns {boolean} true nếu tọa độ nằm trong lãnh thổ Việt Nam (xấp xỉ).
+ */
 function isPointInVietnam(lat, lng) {
   return pointInPolygon(lat, lng, VIETNAM_MAINLAND_POLYGON) ||
          pointInPolygon(lat, lng, PHU_QUOC_POLYGON);
+}
+
+/**
+ * Ngưỡng dung sai (mét) cho phép khi quyết định một điểm có nằm "trên biển" hay không.
+ *
+ * Đa giác hành chính có độ phân giải thấp nên trả về sai ở cả hai chiều: chặn oan
+ * một số điểm trên đất liền ven biển và chấp nhận cả vùng biển Vịnh Thái Lan.
+ * Vì vậy ta KHÔNG dùng phép thử trong/ngoài một cách nhị phân, mà chỉ coi là
+ * "trên biển" khi điểm nằm ngoài đa giác VÀ cách đường viền đa giác trên ngưỡng này.
+ *
+ * Ngưỡng 40km được chọn từ đo thực tế: điểm trên đất liền bị đa giác loại ra xa nhất
+ * là Cửa Lò (33.4km); các điểm biển khơi cần chặn đều cách bờ trên 60km.
+ */
+const SEA_POINT_TOLERANCE_M = 40000;
+
+/**
+ * Khoảng cách (mét) từ một tọa độ tới cạnh gần nhất của đa giác.
+ * Dùng phép chiếu phẳng cục bộ quanh chính tọa độ (đủ chính xác ở tầm vài chục km).
+ *
+ * @param {number} lat - Vĩ độ.
+ * @param {number} lng - Kinh độ.
+ * @param {Array<[number, number]>} polygon - Danh sách đỉnh [lat, lng].
+ * @returns {number} Khoảng cách tối thiểu (mét) tới cạnh đa giác.
+ */
+function distanceToPolygonMeters(lat, lng, polygon) {
+  const metersPerDegLat = 110574;
+  const cosLat = Math.cos(lat * Math.PI / 180);
+  const metersPerDegLng = 111320 * cosLat;
+
+  const px = lng * metersPerDegLng;
+  const py = lat * metersPerDegLat;
+
+  let best = Infinity;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const ax = polygon[j][1] * metersPerDegLng;
+    const ay = polygon[j][0] * metersPerDegLat;
+    const bx = polygon[i][1] * metersPerDegLng;
+    const by = polygon[i][0] * metersPerDegLat;
+
+    const dx = bx - ax;
+    const dy = by - ay;
+    const lenSq = dx * dx + dy * dy;
+    const t = lenSq === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
+
+    const d = Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/**
+ * Quyết định một điểm có nằm "trên biển" (không thể tìm đường bộ tới được) hay không.
+ *
+ * Quy tắc: ngoài đa giác Việt Nam + cách đường viền đa giác quá SEA_POINT_TOLERANCE_M.
+ * Tọa độ không phải số (NaN/undefined/Infinity) cũng được coi là không hợp lệ (fail-closed)
+ * để không bao giờ gọi OSRM với toạ độ hỏng.
+ *
+ * @param {number} lat - Vĩ độ.
+ * @param {number} lng - Kinh độ.
+ * @returns {boolean} true nếu điểm nằm trên biển / không hợp lệ.
+ */
+function isPointClearlyAtSea(lat, lng) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return true;
+  if (isPointInVietnam(lat, lng)) return false;
+  const mainlandDist = distanceToPolygonMeters(lat, lng, VIETNAM_MAINLAND_POLYGON);
+  const phuQuocDist = distanceToPolygonMeters(lat, lng, PHU_QUOC_POLYGON);
+  return mainlandDist > SEA_POINT_TOLERANCE_M && phuQuocDist > SEA_POINT_TOLERANCE_M;
 }
 
 const _routeInVNCache = new WeakMap();
@@ -2170,6 +2264,10 @@ function switchToSaferMode(targetMode) {
 function renderRoutes(routes, mode) {
   if (transportFallbackLayerGroup) transportFallbackLayerGroup.clearLayers();
   if (!routeLayerGroup) return;
+  // FIX Bug 1: xóa toàn bộ polyline của lần render trước trước khi vẽ lại.
+  // Nếu thiếu, mỗi lần chooseRoute()/đổi mode sẽ chồng thêm một bộ polyline mới
+  // lên bộ cũ, khiến tuyến không được chọn vẫn trông "liền" (solid).
+  routeLayerGroup.clearLayers();
   const maxSuggestedRoutes = (typeof window !== 'undefined' && window.MAX_SUGGESTED_ROUTES) 
     ? window.MAX_SUGGESTED_ROUTES 
     : ((typeof CONFIG !== 'undefined' && CONFIG.max_suggested_routes) ? CONFIG.max_suggested_routes : 3);
@@ -2191,7 +2289,19 @@ function renderRoutes(routes, mode) {
   }
   if (typeof window !== 'undefined') window._lastRenderedMode = mode;
 
-  sorted.forEach((route, idx) => {
+  // Sắp xếp thứ tự vẽ: tuyến không được chọn vẽ trước, tuyến được chọn vẽ cuối cùng
+  // để đảm bảo selected route luôn nằm trên cùng về z-order trong SVG pane.
+  // (Thay cho polyline.bringToFront(): thứ tự add vào LayerGroup đã quyết định z-order.)
+  const orderedForDraw = sorted
+    .map((route, idx) => ({ route, idx }))
+    .sort((a, b) => {
+      const aSel = a.route.id === selectedRouteId ? 1 : 0;
+      const bSel = b.route.id === selectedRouteId ? 1 : 0;
+      if (aSel !== bSel) return aSel - bSel;   // unselected (0) trước, selected (1) sau
+      return a.idx - b.idx;                     // giữ nguyên thứ tự gốc khi cùng nhóm
+    });
+
+  orderedForDraw.forEach(({ route }) => {
     const isSelected = route.id === selectedRouteId;
     const color = ROUTE_COLORS[route.routeIndex] || ROUTE_COLORS[0];
 
@@ -2202,6 +2312,8 @@ function renderRoutes(routes, mode) {
       dashArray: isSelected ? null : '3 7'
     }).addTo(routeLayerGroup);
 
+    // Đưa tuyến đang chọn lên trên cùng: routeLayerGroup dùng chung overlayPane với
+    // lớp sự cố, nên nếu chỉ dựa vào thứ tự vẽ thì các sự cố thêm sau sẽ phủ lên tuyến.
     if (isSelected) polyline.bringToFront();
 
     polyline.on('click', () => chooseRoute(route.id));
@@ -2371,6 +2483,14 @@ if (typeof window !== 'undefined') {
   window.analyzeRouteIncidents = analyzeRouteIncidents;
   window._routeInVNCache = _routeInVNCache;
   window.isRouteInsideVietnam = isRouteInsideVietnam;
+  // Exports phục vụ Validation điểm bắt đầu / điểm đến (chống chọn điểm trên biển)
+  window.isPointInVietnam = isPointInVietnam;
+  window.isPointClearlyAtSea = isPointClearlyAtSea;
+  window.distanceToPolygonMeters = distanceToPolygonMeters;
+  window.SEA_POINT_TOLERANCE_M = SEA_POINT_TOLERANCE_M;
+  window.pointInPolygon = pointInPolygon;
+  window.VIETNAM_MAINLAND_POLYGON = VIETNAM_MAINLAND_POLYGON;
+  window.PHU_QUOC_POLYGON = PHU_QUOC_POLYGON;
   window._incidentSnapshotVersion = _incidentSnapshotVersion;
   window.incrementIncidentSnapshotVersion = () => ++_incidentSnapshotVersion;
 }
@@ -2401,6 +2521,13 @@ if (typeof module !== 'undefined' && module.exports) {
     _routeIncidentAnalysisCache,
     _routeInVNCache,
     isRouteInsideVietnam,
+    isPointInVietnam,
+    isPointClearlyAtSea,
+    distanceToPolygonMeters,
+    SEA_POINT_TOLERANCE_M,
+    pointInPolygon,
+    VIETNAM_MAINLAND_POLYGON,
+    PHU_QUOC_POLYGON,
     getRouteMetadata,
     getIncidentBbox,
     isIncidentNearRouteBbox,
