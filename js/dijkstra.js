@@ -7,15 +7,16 @@
  * - Cung cấp thuật toán tìm đường ngắn nhất Dijkstra thuần túy (pure algorithm).
  * - Cung cấp thuật toán tìm K đường ngắn nhất (Yen's K-Shortest Paths Algorithm).
  * - Cung cấp thuật toán tìm kiếm hai chiều (Bidirectional Dijkstra) khi đồ thị hỗ trợ.
- * - Cấu trúc dữ liệu hàng đợi ưu tiên Binary Min-Heap (PriorityQueue) tối ưu O((V + E) log V).
+ * - Cấu trúc dữ liệu hàng đợi ưu tiên Binary Min-Heap & Max-Heap (PriorityQueue) tối ưu O((V + E) log V).
  * - Cơ chế Visited / Finalized Set ngăn chặn duyệt lại node đã chốt khoảng cách tối ưu.
  * - Bỏ qua stale heap entries tức thì trong O(1).
  * - Tối ưu hóa truy cập đồ thị (Adjacency List Fast Path) loại bỏ hàm gián tiếp trong inner loop.
  * - Tối ưu hóa bộ nhớ: Triệt tiêu cấp phát object trung gian trong quá trình Edge Relaxation.
- * - Candidate pool trong Yen sử dụng Binary Min-Heap (O(log |B|)) và Early Pruning.
- * - Tách biệt hoàn toàn `cost` (chi phí tối ưu) và `distance` (chiều dài vật lý thực).
+ * - Candidate pool trong Yen sử dụng Bounded Max-Heap cho phép Early Pruning O(1) peek.
+ * - Tách biệt hoàn toàn `cost` (chi phí tối ưu) và `distance` (chiều dài vật lý).
  * - Hỗ trợ `edge.id` cho đồ thị có đa cạnh (parallel edges), fallback `from->to`.
- * - Tách biệt STATIC BASE COST và DYNAMIC SAFETY COST, tích hợp mô hình rủi ro SafeRoute.
+ * - Tách biệt STATIC BASE COST và DYNAMIC SAFETY COST, tích hợp mô hình suy giảm Bayesian (Half-Life Decay).
+ * - Cơ chế bảo vệ và xử lý an toàn cạnh âm / NaN / Infinity ({ onInvalidEdge: 'clamp' | 'skip' | 'throw' }).
  * - Hỗ trợ bộ nhớ đệm (DijkstraCache) với cơ chế vô hiệu hóa (invalidation) an toàn.
  * - Hỗ trợ giới hạn an toàn (maxVisitedNodes, maxExpandedEdges, maxSearchCost).
  * - Hoàn toàn độc lập (stateless, generic, immutable):
@@ -30,11 +31,13 @@
   'use strict';
 
   /* ==========================================================================
-     PHASE 1: PRIORITY QUEUE (OPTIMIZED BINARY MIN-HEAP)
+     PHASE 1: PRIORITY QUEUE (OPTIMIZED BINARY HEAP)
      ========================================================================== */
 
   /**
-   * Cấu trúc dữ liệu Binary Min-Heap phục vụ hàng đợi ưu tiên cho Dijkstra & Yen.
+   * Cấu trúc dữ liệu Binary Heap phục vụ hàng đợi ưu tiên cho Dijkstra & Yen.
+   * Hỗ trợ cả Min-Heap (mặc định) và Max-Heap (thông qua comparator tùy biến).
+   * 
    * Tối ưu hóa:
    * - Sift-up và Sift-down sử dụng cơ chế dịch chuyển phần tử đơn (Single-assignment displacement)
    *   thay vì hoán đổi 3 bước (_swap), giảm 66% phép gán trong mảng heap.
@@ -60,7 +63,8 @@
     /**
      * Thêm một phần tử vào hàng đợi ưu tiên
      * @param {any} item Dữ liệu (ví dụ nodeId hoặc candidate path)
-     * @param {number} priority Độ ưu tiên (chi phí / khoảng cách, nhỏ hơn = ưu tiên hơn)
+     * @param {number} priority Độ ưu tiên (chi phí / khoảng cách)
+     * @complexity O(log N)
      */
     push(item, priority) {
       const entry = { item, priority: Number(priority) };
@@ -69,8 +73,9 @@
     }
 
     /**
-     * Lấy và loại bỏ phần tử có độ ưu tiên nhỏ nhất (đỉnh min-heap)
+     * Lấy và loại bỏ phần tử có độ ưu tiên cao nhất (đỉnh heap)
      * @returns {{ item: any, priority: number }|null}
+     * @complexity O(log N)
      */
     pop() {
       const length = this.heap.length;
@@ -85,8 +90,9 @@
     }
 
     /**
-     * Xem phần tử đỉnh min-heap mà không loại bỏ
+     * Xem phần tử đỉnh heap mà không loại bỏ
      * @returns {{ item: any, priority: number }|null}
+     * @complexity O(1)
      */
     peek() {
       return this.heap.length > 0 ? this.heap[0] : null;
@@ -95,6 +101,7 @@
     /**
      * Số lượng phần tử trong heap
      * @returns {number}
+     * @complexity O(1)
      */
     size() {
       return this.heap.length;
@@ -103,6 +110,7 @@
     /**
      * Kiểm tra heap có rỗng hay không
      * @returns {boolean}
+     * @complexity O(1)
      */
     isEmpty() {
       return this.heap.length === 0;
@@ -110,6 +118,7 @@
 
     /**
      * Xóa sạch heap
+     * @complexity O(1)
      */
     clear() {
       this.heap.length = 0;
@@ -207,6 +216,7 @@
    *   Tuyệt đối không gây va chạm (collision) giữa các đồ thị khác nhau.
    *   Tự động giải phóng bộ nhớ khi đồ thị bị Garbage Collection (zero memory leak).
    * - Hỗ trợ cache cho cả Standard Dijkstra và Bidirectional Dijkstra.
+   * - Khóa cache đa chiều tích hợp metric ('time' / 'distance') và profileKey.
    * - Giới hạn kích thước tối đa (maxEntries = 100) để chống phình to bộ nhớ.
    * - Tự động vô hiệu hóa (invalidation) khi có sự cố mới hoặc cấu hình thay đổi.
    * - TUYỆT ĐỐI KHÔNG cache khi có bộ lọc động (edgeFilter, nodeFilter trong Yen).
@@ -218,20 +228,18 @@
       this.version = 1;
     }
 
-    _makeKey(startId, destId, profileKey, algorithm = 'standard') {
-      return `${startId}->${destId}#${algorithm}#${profileKey}#v${this.version}#g${_globalCacheVersion}`;
+    _makeKey(startId, destId, profileKey, algorithm = 'standard', metric = 'time', onInvalidEdge = 'clamp') {
+      return `${startId}->${destId}#${algorithm}#${metric}#${onInvalidEdge}#${profileKey}#v${this.version}#g${_globalCacheVersion}`;
     }
 
-    get(startId, destId, profileKey = 'default', algorithm = 'standard') {
-      const key = this._makeKey(startId, destId, profileKey, algorithm);
+    get(startId, destId, profileKey = 'default', algorithm = 'standard', metric = 'time', onInvalidEdge = 'clamp') {
+      const key = this._makeKey(startId, destId, profileKey, algorithm, metric, onInvalidEdge);
       if (!this.cache.has(key)) return null;
 
       const entry = this.cache.get(key);
-      // Đưa lên đầu Map để duy trì trật tự LRU
       this.cache.delete(key);
       this.cache.set(key, entry);
 
-      // Trả về bản sao bề mặt của nodes và edges để caller không làm biến tính cache
       return {
         ...entry,
         nodes: entry.nodes.slice(),
@@ -239,10 +247,10 @@
       };
     }
 
-    set(startId, destId, result, profileKey = 'default', algorithm = 'standard') {
+    set(startId, destId, result, profileKey = 'default', algorithm = 'standard', metric = 'time', onInvalidEdge = 'clamp') {
       if (!result || !result.found) return;
 
-      const key = this._makeKey(startId, destId, profileKey, algorithm);
+      const key = this._makeKey(startId, destId, profileKey, algorithm, metric, onInvalidEdge);
       if (this.cache.has(key)) {
         this.cache.delete(key);
       } else if (this.cache.size >= this.maxEntries) {
@@ -271,6 +279,7 @@
   }
 
   const _graphDijkstraCaches = new WeakMap();
+  const _costFunctionCache = new Map();
   let _globalCacheVersion = 1;
 
   function getGraphCache(graph) {
@@ -285,6 +294,7 @@
 
   function clearAllDijkstraCaches() {
     _globalCacheVersion++;
+    _costFunctionCache.clear();
   }
 
   // Lắng nghe sự kiện dữ liệu thay đổi trên trình duyệt để tự động invalidate cache
@@ -311,12 +321,6 @@
 
   /**
    * Helper trích xuất danh sách các cạnh đi ra (outgoing edges) từ một node bất kỳ
-   * Hỗ trợ đa dạng interface đồ thị:
-   * - graph.getOutgoingEdges(nodeId)
-   * - graph.getNeighbors(nodeId)
-   * - graph.adjacency.get(nodeId)
-   * - graph.adjacencyList.get(nodeId)
-   * 
    * @param {Object} graph Đối tượng đồ thị
    * @param {string|number} nodeId ID nút cần lấy cạnh đi ra
    * @returns {Array<Object>} Danh sách các cạnh đi ra
@@ -366,8 +370,6 @@
 
   /**
    * Helper trích xuất danh sách các cạnh đi vào (incoming edges) từ một node bất kỳ
-   * Phục vụ thuật toán Bidirectional Dijkstra
-   * 
    * @param {Object} graph Đối tượng đồ thị
    * @param {string|number} nodeId ID nút cần lấy cạnh đi vào
    * @returns {Array<Object>} Danh sách các cạnh đi vào
@@ -424,19 +426,35 @@
   }
 
   /**
-   * Trích xuất chi phí mặc định của một cạnh (Fast Path)
-   * Ưu tiên: edge.cost -> edge.distance -> edge.weight
+   * Trích xuất chi phí mặc định của một cạnh có xem xét tiêu chí (metric):
+   * - metric = 'time': Ưu tiên edge.cost -> edge.freeflow_time -> edge.distance/10 -> edge.weight
+   * - metric = 'distance': Ưu tiên edge.cost -> edge.distance -> edge.weight -> edge.freeflow_time
+   * 
    * @param {Object} edge
+   * @param {'time'|'distance'} [metric='time']
    * @returns {number}
+   * @complexity O(1)
    */
-  function defaultGetEdgeCost(edge) {
+  function defaultGetEdgeCost(edge, metric = 'time') {
     if (!edge) return Infinity;
     const c = edge.cost;
     if (typeof c === 'number' && Number.isFinite(c)) return c;
-    const d = edge.distance;
-    if (typeof d === 'number' && Number.isFinite(d)) return d;
-    const w = edge.weight;
-    if (typeof w === 'number' && Number.isFinite(w)) return w;
+
+    if (metric === 'time') {
+      const ft = edge.freeflow_time;
+      if (typeof ft === 'number' && Number.isFinite(ft) && ft > 0) return ft;
+      const d = edge.distance;
+      if (typeof d === 'number' && Number.isFinite(d)) return d / 10;
+      const w = edge.weight;
+      if (typeof w === 'number' && Number.isFinite(w)) return w;
+    } else {
+      const d = edge.distance;
+      if (typeof d === 'number' && Number.isFinite(d)) return d;
+      const w = edge.weight;
+      if (typeof w === 'number' && Number.isFinite(w)) return w;
+      const ft = edge.freeflow_time;
+      if (typeof ft === 'number' && Number.isFinite(ft)) return ft;
+    }
     return Infinity;
   }
 
@@ -446,20 +464,48 @@
 
   /**
    * Tạo hàm tính chi phí cạnh động cho SafeRoute:
-   * Kết hợp chi phí cơ sở (quãng đường / thời gian) và chi phí rủi ro / sự cố / giao thông.
+   * Kết hợp chi phí cơ sở (quãng đường / thời gian) và chi phí rủi ro / sự cố thời gian thực.
    * 
-   * totalCost = baseCost + riskPenalty + incidentPenalty + trafficPenalty
+   * Hạng mục nâng cấp:
+   * 1. Hỗ trợ caching cost function theo (metric, mode, configVersion, incidentsMapVersion).
+   * 2. Áp dụng mô hình suy giảm Bayesian (Half-Life Exponential Decay) theo thời gian:
+   *    C(t) = C_0 * (0.5)^(elapsedHours / halfLifeHours)
+   * 3. Precompute decayed confidence một lần duy nhất trước vòng lặp (Map tra cứu O(1)).
+   * 4. Giới hạn phạt tối đa (penalty clamping) với MAX_PENALTY_RATIO để tránh méo mó đường đi.
    * 
    * @param {Object} [options={}]
    * @param {'time'|'distance'} [options.metric='time'] Tiêu chí cơ sở ('time' hoặc 'distance')
    * @param {'fastest'|'balanced'|'safest'} [options.mode='balanced'] Chế độ an toàn
+   * @param {number} [options.now] Mốc thời gian đánh giá (mặc định Date.now())
    * @param {Object} [options.config] Cấu hình hệ thống (mặc định lấy từ CONFIG toàn cục)
+   * @param {number} [options.configVersion=1] Phiên bản cấu hình (phục vụ cache invalidation)
    * @param {Map<string, Object>|Object} [options.incidentsMap] Danh sách/Map sự cố
-   * @returns {Function} Hàm (edge) => number
+   * @param {number} [options.incidentsMapVersion=1] Phiên bản dữ liệu sự cố
+   * @param {Function} [options.getIncidentConfidence] Hàm tính confidence tùy chọn
+   * @param {number} [options.decayPrecisionMs=300000] Độ phân giải thời gian bucket cho cache (mặc định 5 phút = 300.000ms)
+   * @returns {Function} Hàm thuần túy (edge) => number (hợp lệ trong cửa sổ thời gian bucket của cache)
+   * @complexity O(I) chuẩn bị, O(1) mỗi lần gọi trên cạnh
    */
   function createSafeRouteCostFunction(options = {}) {
     const metric = options.metric || 'time';
     const mode = options.mode || 'balanced';
+    const cfgVersion = options.configVersion || 1;
+    const incVersion = options.incidentsMapVersion || 1;
+    const nowTimestamp = (typeof options.now === 'number') ? options.now : null;
+
+    // Bucket thời gian theo chu kỳ decayPrecisionMs (mặc định 5 phút = 300.000ms) để cache không bị đóng băng decay
+    const decayPrecisionMs = (typeof options.decayPrecisionMs === 'number' && options.decayPrecisionMs > 0)
+      ? options.decayPrecisionMs
+      : (5 * 60 * 1000);
+    const bucket = (nowTimestamp != null)
+      ? Math.floor(nowTimestamp / decayPrecisionMs)
+      : Math.floor(Date.now() / decayPrecisionMs);
+
+    // Cache key kiểm tra tái sử dụng cost function theo bucket thời gian
+    const cacheKey = `${metric}#${mode}#${cfgVersion}#${incVersion}#${bucket}`;
+    if (options.noCache !== true && _costFunctionCache.has(cacheKey)) {
+      return _costFunctionCache.get(cacheKey);
+    }
 
     const globalCfg = (typeof window !== 'undefined' && window.CONFIG)
       ? window.CONFIG
@@ -479,12 +525,44 @@
       cao: 1.0, trungbinh: 0.5, thap: 0.2
     };
 
+    const maxPenaltyRatio = (typeof cfg.max_penalty_ratio === 'number') ? cfg.max_penalty_ratio : 5.0;
     const incMap = options.incidentsMap || null;
+    const evalNow = nowTimestamp || Date.now();
 
-    return function getSafeRouteCost(edge) {
+    // PRECOMPUTATION: Tính toán trước decayed confidence cho toàn bộ incidents
+    // Lưu vào Map để tra cứu O(1) trong inner loop mà không gọi Math.pow lặp lại
+    const decayedConfidenceMap = new Map();
+    if (incMap) {
+      const decayConfig = (typeof window !== 'undefined' && window.INCIDENT_DECAY_CONFIG)
+        ? window.INCIDENT_DECAY_CONFIG
+        : (cfg.decay || {});
+
+      const entries = (typeof incMap.entries === 'function')
+        ? incMap.entries()
+        : Object.entries(incMap);
+
+      for (const [id, inc] of entries) {
+        if (!inc) continue;
+        let conf;
+        if (typeof options.getIncidentConfidence === 'function') {
+          conf = options.getIncidentConfidence(inc, evalNow);
+        } else {
+          const baseConf = (typeof inc.confidence === 'number') ? inc.confidence : 50;
+          const lastActivity = inc.lastConfirmedAt || inc.createdAt || inc.startedAt || evalNow;
+          const elapsedHours = Math.max(0, (evalNow - lastActivity) / 3600000);
+          const typeDecay = decayConfig[inc.type] || { halfLifeHours: 24 };
+          const halfLife = typeDecay.halfLifeHours || 24;
+          conf = baseConf * Math.pow(0.5, elapsedHours / halfLife);
+          conf = Math.max(0, Math.min(100, conf));
+        }
+        decayedConfidenceMap.set(String(id), conf / 100);
+      }
+    }
+
+    const costFunction = function getSafeRouteCost(edge) {
       if (!edge) return Infinity;
 
-      // 1. BASE STATIC COST: Ưu tiên freeflow_time hoặc distance
+      // 1. BASE STATIC COST: Phân biệt theo metric ('time' vs 'distance')
       let baseCost;
       if (metric === 'time') {
         const ft = edge.freeflow_time;
@@ -508,17 +586,19 @@
         return baseCost;
       }
 
-      // 2. DYNAMIC SAFETY PENALTY: Dựa trên sự cố thực tế
+      // 2. DYNAMIC SAFETY PENALTY: Dựa trên sự cố thực tế với decayed confidence
       let totalIncidentWeight = 0;
       if (incMap && Array.isArray(edge.incident_ids)) {
         for (let i = 0; i < edge.incident_ids.length; i++) {
-          const incId = edge.incident_ids[i];
+          const incId = String(edge.incident_ids[i]);
           const inc = (typeof incMap.get === 'function') ? incMap.get(incId) : incMap[incId];
           if (inc) {
             const tw = typeWeights[inc.type] || 0.1;
             const lw = levelWeights[inc.level] || 0.2;
-            const conf = (typeof inc.confidence === 'number') ? (inc.confidence / 100) : 0.5;
-            totalIncidentWeight += tw * lw * conf;
+            const confRatio = decayedConfidenceMap.has(incId)
+              ? decayedConfidenceMap.get(incId)
+              : ((typeof inc.confidence === 'number') ? (inc.confidence / 100) : 0.5);
+            totalIncidentWeight += tw * lw * confRatio;
           }
         }
       } else {
@@ -526,10 +606,19 @@
         totalIncidentWeight = edge.incident_ids.length * 0.25;
       }
 
-      // w = baseCost * (1 + alpha * riskFactor)
-      const penalty = baseCost * modeAlpha * totalIncidentWeight;
+      // 3. PENALTY CLAMPING: Ngăn chặn penalty kéo dài vô tận ở mode 'safest'
+      const rawPenalty = baseCost * modeAlpha * totalIncidentWeight;
+      const maxPenalty = baseCost * maxPenaltyRatio;
+      const penalty = Math.min(rawPenalty, maxPenalty);
+
       return baseCost + penalty;
     };
+
+    if (options.noCache !== true) {
+      _costFunctionCache.set(cacheKey, costFunction);
+    }
+
+    return costFunction;
   }
 
   /* ==========================================================================
@@ -538,23 +627,26 @@
 
   /**
    * Thuật toán Dijkstra tìm đường ngắn nhất giữa 2 node trên đồ thị.
+   * 
    * Tối ưu hóa:
    * - Bổ sung `finalized` (Visited Set) ngăn chặn duyệt lại node đã chốt shortest distance.
+   * - Sửa triệt để lỗi off-by-one: Kiểm tra search limits (maxCost, maxVisitedNodes) trước khi finalized.add(u).
    * - Loại bỏ stale heap entries tức thì trong O(1).
-   * - Bỏ qua việc thả lỏng (relax) cạnh dẫn tới node đã finalized trong O(1).
    * - Fast-path truy cập Adjacency List trực tiếp (bỏ hàm gián tiếp trong inner loop).
    * - Triệt tiêu cấp phát object `{ node, edge }` trong quá trình Edge Relaxation.
-   * - Bảo toàn tuyệt đối khả năng xử lý parallel edges.
-   * - Hỗ trợ giới hạn an toàn: maxVisitedNodes, maxExpandedEdges, maxSearchCost.
-   * - Hỗ trợ thu thập metrics hiệu năng (visitedNodes, expandedEdges, heapOps).
-   * - Hỗ trợ Query Cache tự động khi không có bộ lọc động.
+   * - Hỗ trợ an toàn khi gặp cạnh âm / không hợp lệ ({ onInvalidEdge: 'clamp' | 'skip' | 'throw' }).
+   * - Gộp kiểm tra finite & NaN tối ưu hiệu năng V8.
+   * - Hỗ trợ tùy chọn assumeStringIds để bỏ qua ép kiểu string không cần thiết.
    * - Tách biệt hoàn toàn cost và distance.
    * 
    * @param {Object} graph Đối tượng đồ thị cung cấp giao diện truy vấn
    * @param {string|number} startNodeId Node xuất phát
    * @param {string|number} destinationNodeId Node đích
    * @param {Object} [options={}] Cấu hình tùy chọn
+   * @param {'time'|'distance'} [options.metric='time'] Tiêu chí mặc định ('time' hoặc 'distance')
    * @param {Function} [options.getEdgeCost] Hàm tính chi phí cạnh (edge) => number
+   * @param {'clamp'|'skip'|'throw'} [options.onInvalidEdge='clamp'] Cơ chế xử lý cạnh âm / không hợp lệ
+   * @param {boolean} [options.assumeStringIds=false] Cờ báo trước node IDs luôn là string
    * @param {Function} [options.edgeFilter] Hàm lọc cạnh (edge) => boolean
    * @param {Function} [options.nodeFilter] Hàm lọc node (nodeId) => boolean
    * @param {'standard'|'bidirectional'} [options.algorithm='standard'] Thuật toán ('standard' hoặc 'bidirectional')
@@ -565,7 +657,8 @@
    * @param {string} [options.costProfileKey='default'] Khóa phân biệt cấu hình chi phí trong cache
    * @param {Object} [options.metrics] Đối tượng ghi nhận số liệu benchmark
    * @param {boolean} [options.debug=false] Bật log debug
-   * @returns {{ found: boolean, cost: number, distance: number|null, nodes: Array<string>, edges: Array<Object>, limitReached?: boolean, reason?: string }}
+   * @returns {{ found: boolean, cost: number, distance: number|null, nodes: Array<string>, edges: Array<Object>, limitReached?: boolean, reason?: string, algorithm?: string }}
+   * @complexity O((V + E) log V)
    */
   function dijkstra(graph, startNodeId, destinationNodeId, options = {}) {
     const isDebug = options.debug === true;
@@ -600,7 +693,6 @@
     const edgeFilter = typeof options.edgeFilter === 'function' ? options.edgeFilter : null;
     const nodeFilter = typeof options.nodeFilter === 'function' ? options.nodeFilter : null;
 
-    // Kiểm tra nodeFilter nếu có cho start hoặc dest
     if (nodeFilter) {
       if (!nodeFilter(startId) || !nodeFilter(destId)) {
         return { found: false, cost: Infinity, distance: null, nodes: [], edges: [] };
@@ -614,17 +706,20 @@
         cost: 0,
         distance: 0,
         nodes: [startId],
-        edges: []
+        edges: [],
+        algorithm: 'standard'
       };
     }
 
+    const metric = options.metric || 'time';
+    const onInvalidEdge = options.onInvalidEdge || 'clamp';
     const hasCustomCost = typeof options.getEdgeCost === 'function';
     const isCacheable = !edgeFilter && !nodeFilter && options.noCache !== true && (!hasCustomCost || Boolean(options.costProfileKey));
     const profileKey = options.costProfileKey || 'default';
     const graphCache = isCacheable ? (options.cache || getGraphCache(graph)) : null;
 
     if (graphCache) {
-      const cached = graphCache.get(startId, destId, profileKey, 'standard');
+      const cached = graphCache.get(startId, destId, profileKey, 'standard', metric, onInvalidEdge);
       if (cached) {
         if (options.metrics) {
           options.metrics.cacheHit = true;
@@ -638,8 +733,9 @@
       options.metrics.cacheHit = false;
     }
 
-    // 6. Cấu hình chi phí cạnh & Giới hạn tìm kiếm
-    const getCost = hasCustomCost ? options.getEdgeCost : defaultGetEdgeCost;
+    // 5. Cấu hình chi phí cạnh & Giới hạn tìm kiếm
+    const getCost = hasCustomCost ? options.getEdgeCost : ((edge) => defaultGetEdgeCost(edge, metric));
+    const assumeString = options.assumeStringIds === true;
 
     const maxVisited = (typeof options.maxVisitedNodes === 'number' && options.maxVisitedNodes > 0)
       ? options.maxVisitedNodes
@@ -658,12 +754,11 @@
       ? (id) => graph.getOutgoingEdges(id)
       : (typeof graph.getNeighbors === 'function' ? (id) => graph.getNeighbors(id) : null);
 
-    // 7. Khởi tạo trạng thái thuật toán
-    // Sử dụng prevNode và prevEdge riêng biệt để TRIỆT TIÊU hoàn toàn việc cấp phát object { node, edge } trong inner loop
+    // 6. Khởi tạo trạng thái thuật toán (State hoàn toàn nằm ngoài graph)
     const distances = new Map();
     const prevNode = new Map(); // v -> u
     const prevEdge = new Map(); // v -> edge
-    const finalized = new Set(); // VISITED / FINALIZED SET: Chốt các node có khoảng cách tối ưu
+    const finalized = new Set();
     const pq = new PriorityQueue();
 
     distances.set(startId, 0);
@@ -678,7 +773,7 @@
     let heapPops = 0;
     let heapPushes = 1;
 
-    // 8. Vòng lặp chính của Dijkstra
+    // 7. Vòng lặp chính của Dijkstra
     while (!pq.isEmpty()) {
       const entry = pq.pop();
       heapPops++;
@@ -686,33 +781,33 @@
       const currentDist = entry.priority;
 
       // STALE HEAP ENTRY CHECK (O(1)):
-      // Nếu node u đã được finalized trước đó với khoảng cách nhỏ hơn -> BỎ QUA NGAY LẬP TỨC
       if (finalized.has(u)) {
         continue;
       }
 
-      // Chốt khoảng cách tối ưu cho node u
-      finalized.add(u);
-
-      // KIỂM TRA GIỚI HẠN AN TOÀN: maxVisitedNodes
-      if (finalized.size > maxVisited) {
-        limitReached = true;
-        limitReason = 'max_visited_nodes_exceeded';
+      // EARLY TERMINATION: Destination đã được pop khỏi Min-Heap với khoảng cách tối ưu
+      if (u === destId) {
+        destinationFound = true;
+        finalized.add(u);
         break;
       }
 
-      // KIỂM TRA GIỚI HẠN AN TOÀN: maxSearchCost
+      // KIỂM TRA GIỚI HẠN AN TOÀN TRƯỚC KHI FINALIZE: maxSearchCost
       if (currentDist > maxCost) {
         limitReached = true;
         limitReason = 'max_search_cost_exceeded';
         break;
       }
 
-      // EARLY TERMINATION: Destination đã được pop khỏi Min-Heap với khoảng cách tối ưu
-      if (u === destId) {
-        destinationFound = true;
+      // KIỂM TRA GIỚI HẠN AN TOÀN TRƯỚC KHI FINALIZE: maxVisitedNodes (>= sửa lỗi off-by-one)
+      if (finalized.size >= maxVisited) {
+        limitReached = true;
+        limitReason = 'max_visited_nodes_exceeded';
         break;
       }
+
+      // Chốt khoảng cách tối ưu cho node u
+      finalized.add(u);
 
       // Lấy danh sách các cạnh đi ra từ u qua Fast Path
       let outgoingEdges;
@@ -731,21 +826,17 @@
         const edge = outgoingEdges[i];
         if (!edge || edge.to == null) continue;
 
-        const v = typeof edge.to === 'string' ? edge.to : String(edge.to);
+        const v = assumeString ? edge.to : (typeof edge.to === 'string' ? edge.to : String(edge.to));
 
-        // TỐI ƯU HÓA: Nếu node v đã được finalized, chắc chắn không thể cải thiện thêm khoảng cách tới v -> BỎ QUA
-        // Cơ chế này không làm mất parallel edges: các parallel edges (u -> v) đều được xét khi u được pop
-        // vì tại thời điểm đó v chưa nằm trong finalized set!
+        // TỐI ƯU HÓA: Node v đã được finalized -> không thể cải thiện thêm
         if (finalized.has(v)) {
           continue;
         }
 
-        // Áp dụng bộ lọc node
         if (nodeFilter && !nodeFilter(v)) {
           continue;
         }
 
-        // Áp dụng bộ lọc edge
         if (edgeFilter && !edgeFilter(edge)) {
           continue;
         }
@@ -757,33 +848,40 @@
           break;
         }
 
-        // Tính chi phí cạnh (Fast-path truy cập trực tiếp thuộc tính nếu không có hàm tùy biến)
+        // Tính chi phí cạnh
         let edgeCost;
         if (!hasCustomCost) {
-          const c = edge.cost;
-          if (typeof c === 'number' && Number.isFinite(c)) {
-            edgeCost = c;
-          } else {
-            const d = edge.distance;
-            if (typeof d === 'number' && Number.isFinite(d)) {
-              edgeCost = d;
-            } else {
-              const w = edge.weight;
-              edgeCost = (typeof w === 'number') ? w : Infinity;
-            }
-          }
+          edgeCost = defaultGetEdgeCost(edge, metric);
         } else {
           edgeCost = getCost(edge);
         }
 
-        if (typeof edgeCost !== 'number' || Number.isNaN(edgeCost)) {
+        // MICRO-OPTIMIZATION: Gộp finite check & NaN check
+        if (typeof edgeCost !== 'number' || !Number.isFinite(edgeCost)) {
+          if (metrics) metrics.invalidEdges = (metrics.invalidEdges || 0) + 1;
+          if (isDebug && typeof console !== 'undefined') {
+            console.warn(`[Dijkstra] Cạnh không hợp lệ (NaN/Infinity): cost=${edgeCost} trên (${edge.from}->${edge.to})`);
+          }
           continue;
         }
+
+        // XỬ LÝ AN TOÀN TRỌNG SỐ CẠNH ÂM (Negative Edge Handling)
         if (edgeCost < 0) {
-          throw new Error(`[Dijkstra] Phát hiện trọng số cạnh âm: cost = ${edgeCost} trên cạnh (${edge.from || u} -> ${v}). Thuật toán Dijkstra không hỗ trợ chi phí âm.`);
-        }
-        if (!Number.isFinite(edgeCost)) {
-          continue;
+          if (metrics) {
+            metrics.negativeEdges = (metrics.negativeEdges || 0) + 1;
+            metrics.invalidEdges = (metrics.invalidEdges || 0) + 1;
+          }
+          if (isDebug && typeof console !== 'undefined') {
+            console.warn(`[Dijkstra] Phát hiện cạnh có chi phí âm: cost=${edgeCost} trên (${edge.from || u}->${v})`);
+          }
+          if (onInvalidEdge === 'throw') {
+            throw new Error(`[Dijkstra] Phát hiện trọng số cạnh âm: cost = ${edgeCost} trên cạnh (${edge.from || u} -> ${v}). Thuật toán Dijkstra không hỗ trợ chi phí âm.`);
+          } else if (onInvalidEdge === 'skip') {
+            continue;
+          } else {
+            // 'clamp' mode: kẹp về 0 để tiếp tục tìm kiếm mà không crash
+            edgeCost = 0;
+          }
         }
 
         const altDist = currentDist + edgeCost;
@@ -803,7 +901,7 @@
       if (limitReached) break;
     }
 
-    // Ghi nhận metrics nếu được yêu cầu
+    // Ghi nhận metrics
     if (metrics) {
       metrics.visitedNodes = finalized.size;
       metrics.expandedEdges = expandedEdgesCount;
@@ -812,7 +910,7 @@
       metrics.limitReached = limitReached;
     }
 
-    // 9. Xử lý khi vượt giới hạn an toàn
+    // 8. Xử lý khi vượt giới hạn an toàn
     if (limitReached && !destinationFound) {
       return {
         found: false,
@@ -821,22 +919,24 @@
         cost: Infinity,
         distance: null,
         nodes: [],
-        edges: []
+        edges: [],
+        algorithm: 'standard'
       };
     }
 
-    // 10. Không tới được điểm đích (unreachable / disconnected)
+    // 9. Không tới được điểm đích (unreachable / disconnected)
     if (!destinationFound && (!distances.has(destId) || distances.get(destId) === Infinity)) {
       return {
         found: false,
         cost: Infinity,
         distance: null,
         nodes: [],
-        edges: []
+        edges: [],
+        algorithm: 'standard'
       };
     }
 
-    // 11. Tái tạo đường đi (Path Reconstruction)
+    // 10. Tái tạo đường đi (Path Reconstruction)
     const pathNodes = [];
     const pathEdges = [];
     let curr = destId;
@@ -851,7 +951,8 @@
           cost: Infinity,
           distance: null,
           nodes: [],
-          edges: []
+          edges: [],
+          algorithm: 'standard'
         };
       }
       pathEdges.push(edge);
@@ -889,7 +990,7 @@
 
     // Lưu vào Cache
     if (graphCache) {
-      graphCache.set(startId, destId, finalResult, profileKey, 'standard');
+      graphCache.set(startId, destId, finalResult, profileKey, 'standard', metric, onInvalidEdge);
     }
 
     return finalResult;
@@ -901,23 +1002,24 @@
 
   /**
    * Thuật toán Bidirectional Dijkstra tìm đường ngắn nhất hai chiều đồng thời.
-   * - Xuất phát đồng thời từ Start (thuận) và Destination (nghịch).
-   * - Tối ưu hóa:
-   *   + Fast-path truy cập Adjacency và Incoming Lists trực tiếp.
-   *   + Triệt tiêu cấp phát object { node, edge } trong cả 2 hướng.
-   *   + Thu thập đầy đủ metrics (visitedNodes, expandedEdges, heapOps).
-   *   + Tích hợp đầy đủ bộ nhớ đệm DijkstraLRUCache cho repeated queries.
-   *   + Kiểm tra điều kiện dừng toán học chính xác: minF + minB >= bestCost.
-   * - Yêu cầu đồ thị cung cấp cả outgoing edges (chiều đi) và incoming edges (chiều về).
-   * - Nếu đồ thị không hỗ trợ incoming edges, tự động fallback an toàn sang standard dijkstra.
+   * 
+   * Tối ưu hóa:
+   * - Fast-path truy cập Adjacency và Incoming Lists trực tiếp.
+   * - Triệt tiêu cấp phát object { node, edge } trong cả 2 hướng.
+   * - Fallback logic chuẩn: Chỉ fallback về Standard Dijkstra khi đồ thị KHÔNG hỗ trợ incoming edges.
+   *   Nếu đồ thị hỗ trợ incoming nhưng không có đường nối, trả về found: false trực tiếp (không chạy lại Standard).
+   * - Áp dụng cơ chế an toàn cạnh âm ({ onInvalidEdge: 'clamp' | 'skip' | 'throw' }).
+   * - Tích hợp đầy đủ bộ nhớ đệm DijkstraLRUCache và metrics.
    * 
    * @param {Object} graph Đối tượng đồ thị
    * @param {string|number} startNodeId Node xuất phát
    * @param {string|number} destinationNodeId Node đích
    * @param {Object} [options={}] Cấu hình tùy chọn
    * @returns {Object}
+   * @complexity O((V + E) log V), thực nghiệm giảm 30-50% số node duyệt so với Standard
    */
   function bidirectionalDijkstra(graph, startNodeId, destinationNodeId, options = {}) {
+    const isDebug = options.debug === true;
     const startId = String(startNodeId);
     const destId = String(destinationNodeId);
 
@@ -925,24 +1027,27 @@
       return { found: true, cost: 0, distance: 0, nodes: [startId], edges: [], algorithm: 'bidirectional' };
     }
 
-    // Kiểm tra tính tương thích của graph với tìm kiếm ngược
-    const testIncoming = getGraphIncomingEdges(graph, destId);
-    if (!Array.isArray(testIncoming) || (testIncoming.length === 0 && getGraphOutgoingEdges(graph, destId).length > 0)) {
-      // Fallback về Standard Dijkstra nếu đồ thị không lưu incoming edges
+    // FALLBACK LOGIC CHUẨN: Chỉ fallback khi graph THỰC SỰ không hỗ trợ incoming edges
+    const supportsIncoming = typeof graph.getIncomingEdges === 'function' ||
+                             (graph.incoming instanceof Map) ||
+                             (graph.incoming && typeof graph.incoming === 'object');
+
+    if (!supportsIncoming) {
       const fallbackOpts = { ...options, algorithm: 'standard' };
       return dijkstra(graph, startId, destId, fallbackOpts);
     }
 
+    const metric = options.metric || 'time';
+    const onInvalidEdge = options.onInvalidEdge || 'clamp';
     const edgeFilter = typeof options.edgeFilter === 'function' ? options.edgeFilter : null;
     const nodeFilter = typeof options.nodeFilter === 'function' ? options.nodeFilter : null;
     const hasCustomCost = typeof options.getEdgeCost === 'function';
-    // Kiểm tra Cache cho Bidirectional Dijkstra
     const isCacheable = !edgeFilter && !nodeFilter && options.noCache !== true && (!hasCustomCost || Boolean(options.costProfileKey));
     const profileKey = options.costProfileKey || 'default';
     const graphCache = isCacheable ? (options.cache || getGraphCache(graph)) : null;
 
     if (graphCache) {
-      const cached = graphCache.get(startId, destId, profileKey, 'bidirectional');
+      const cached = graphCache.get(startId, destId, profileKey, 'bidirectional', metric, onInvalidEdge);
       if (cached) {
         if (options.metrics) {
           options.metrics.cacheHit = true;
@@ -955,7 +1060,9 @@
     if (options.metrics) {
       options.metrics.cacheHit = false;
     }
-    const getCost = hasCustomCost ? options.getEdgeCost : defaultGetEdgeCost;
+
+    const getCost = hasCustomCost ? options.getEdgeCost : ((edge) => defaultGetEdgeCost(edge, metric));
+    const assumeString = options.assumeStringIds === true;
 
     // Fast-path truy cập Adjacency và Incoming
     const adjMap = (graph.adjacency instanceof Map) ? graph.adjacency : null;
@@ -973,15 +1080,15 @@
     // Hàng đợi và khoảng cách cho chiều thuận (Forward: start ->)
     const pqF = new PriorityQueue();
     const distF = new Map();
-    const prevNodeF = new Map(); // v -> u
-    const prevEdgeF = new Map(); // v -> edge
+    const prevNodeF = new Map();
+    const prevEdgeF = new Map();
     const finalizedF = new Set();
 
     // Hàng đợi và khoảng cách cho chiều nghịch (Backward: -> dest)
     const pqB = new PriorityQueue();
     const distB = new Map();
-    const nextNodeB = new Map(); // u -> v
-    const nextEdgeB = new Map(); // u -> edge
+    const nextNodeB = new Map();
+    const nextEdgeB = new Map();
     const finalizedB = new Set();
 
     distF.set(startId, 0);
@@ -996,9 +1103,9 @@
     let heapPops = 0;
     let heapPushes = 2;
 
+    const metrics = options.metrics || null;
+
     while (!pqF.isEmpty() && !pqB.isEmpty()) {
-      // Dừng sớm: Nếu tổng giá trị min ở đỉnh 2 heap >= bestCost đã tìm thấy
-      // thì không thể có bất kỳ đường đi nào khác ngắn hơn bestCost
       const topF = pqF.peek();
       const topB = pqB.peek();
       const minF = topF ? topF.priority : Infinity;
@@ -1007,7 +1114,6 @@
         break;
       }
 
-      // Chọn mở rộng bên có priority nhỏ hơn để cân bằng 2 quả cầu tìm kiếm
       if (minF <= minB) {
         // --- FORWARD STEP ---
         const entryF = pqF.pop();
@@ -1028,7 +1134,7 @@
         for (let i = 0; i < nOut; i++) {
           const edge = outEdges[i];
           if (!edge || edge.to == null) continue;
-          const v = typeof edge.to === 'string' ? edge.to : String(edge.to);
+          const v = assumeString ? edge.to : (typeof edge.to === 'string' ? edge.to : String(edge.to));
 
           if (finalizedF.has(v)) continue;
           if (nodeFilter && !nodeFilter(v)) continue;
@@ -1038,21 +1144,32 @@
 
           let cost;
           if (!hasCustomCost) {
-            const c = edge.cost;
-            if (typeof c === 'number' && Number.isFinite(c)) cost = c;
-            else {
-              const d = edge.distance;
-              if (typeof d === 'number' && Number.isFinite(d)) cost = d;
-              else {
-                const w = edge.weight;
-                cost = (typeof w === 'number') ? w : Infinity;
-              }
-            }
+            cost = defaultGetEdgeCost(edge, metric);
           } else {
             cost = getCost(edge);
           }
 
-          if (!Number.isFinite(cost) || cost < 0) continue;
+          if (typeof cost !== 'number' || !Number.isFinite(cost)) {
+            if (metrics) metrics.invalidEdges = (metrics.invalidEdges || 0) + 1;
+            continue;
+          }
+
+          if (cost < 0) {
+            if (metrics) {
+              metrics.negativeEdges = (metrics.negativeEdges || 0) + 1;
+              metrics.invalidEdges = (metrics.invalidEdges || 0) + 1;
+            }
+            if (isDebug && typeof console !== 'undefined') {
+              console.warn(`[Bidirectional] Cạnh có chi phí âm: cost=${cost} trên (${edge.from}->${edge.to})`);
+            }
+            if (onInvalidEdge === 'throw') {
+              throw new Error(`[Dijkstra] Phát hiện trọng số cạnh âm: cost = ${cost} trên cạnh (${edge.from}->${edge.to}).`);
+            } else if (onInvalidEdge === 'skip') {
+              continue;
+            } else {
+              cost = 0;
+            }
+          }
 
           const alt = dU + cost;
           const curBestV = distF.get(v);
@@ -1096,7 +1213,7 @@
         for (let i = 0; i < nIn; i++) {
           const edge = inEdges[i];
           if (!edge || edge.from == null) continue;
-          const u = typeof edge.from === 'string' ? edge.from : String(edge.from);
+          const u = assumeString ? edge.from : (typeof edge.from === 'string' ? edge.from : String(edge.from));
 
           if (finalizedB.has(u)) continue;
           if (nodeFilter && !nodeFilter(u)) continue;
@@ -1106,21 +1223,32 @@
 
           let cost;
           if (!hasCustomCost) {
-            const c = edge.cost;
-            if (typeof c === 'number' && Number.isFinite(c)) cost = c;
-            else {
-              const d = edge.distance;
-              if (typeof d === 'number' && Number.isFinite(d)) cost = d;
-              else {
-                const w = edge.weight;
-                cost = (typeof w === 'number') ? w : Infinity;
-              }
-            }
+            cost = defaultGetEdgeCost(edge, metric);
           } else {
             cost = getCost(edge);
           }
 
-          if (!Number.isFinite(cost) || cost < 0) continue;
+          if (typeof cost !== 'number' || !Number.isFinite(cost)) {
+            if (metrics) metrics.invalidEdges = (metrics.invalidEdges || 0) + 1;
+            continue;
+          }
+
+          if (cost < 0) {
+            if (metrics) {
+              metrics.negativeEdges = (metrics.negativeEdges || 0) + 1;
+              metrics.invalidEdges = (metrics.invalidEdges || 0) + 1;
+            }
+            if (isDebug && typeof console !== 'undefined') {
+              console.warn(`[Bidirectional] Cạnh có chi phí âm: cost=${cost} trên (${edge.from}->${edge.to})`);
+            }
+            if (onInvalidEdge === 'throw') {
+              throw new Error(`[Dijkstra] Phát hiện trọng số cạnh âm: cost = ${cost} trên cạnh (${edge.from}->${edge.to}).`);
+            } else if (onInvalidEdge === 'skip') {
+              continue;
+            } else {
+              cost = 0;
+            }
+          }
 
           const alt = dV + cost;
           const curBestU = distB.get(u);
@@ -1147,17 +1275,23 @@
       }
     }
 
-    if (options.metrics) {
-      options.metrics.visitedNodes = finalizedF.size + finalizedB.size;
-      options.metrics.expandedEdges = expandedEdgesCount;
-      options.metrics.heapPops = heapPops;
-      options.metrics.heapPushes = heapPushes;
+    if (metrics) {
+      metrics.visitedNodes = finalizedF.size + finalizedB.size;
+      metrics.expandedEdges = expandedEdgesCount;
+      metrics.heapPops = heapPops;
+      metrics.heapPushes = heapPushes;
     }
 
+    // Đã duyệt toàn bộ frontier mà không tìm thấy meeting node -> đồ thị không liên thông
     if (!bestMeetingNode || !Number.isFinite(bestCost)) {
-      // Fallback về standard dijkstra nếu chưa tìm ra qua bidirectional
-      const fallbackOpts = { ...options, algorithm: 'standard' };
-      return dijkstra(graph, startId, destId, fallbackOpts);
+      return {
+        found: false,
+        cost: Infinity,
+        distance: null,
+        nodes: [],
+        edges: [],
+        algorithm: 'bidirectional'
+      };
     }
 
     // Tái tạo đường đi từ Start -> MeetingNode -> Dest
@@ -1213,14 +1347,14 @@
     };
 
     if (graphCache) {
-      graphCache.set(startId, destId, bidiResult, profileKey, 'bidirectional');
+      graphCache.set(startId, destId, bidiResult, profileKey, 'bidirectional', metric, onInvalidEdge);
     }
 
     return bidiResult;
   }
 
   /* ==========================================================================
-     PHASE 7: YEN'S K-SHORTEST PATHS ENGINE (EARLY PRUNING & CANDIDATE HEAP)
+     PHASE 7: YEN'S K-SHORTEST PATHS ENGINE (BOUNDED MAX-HEAP PRUNING)
      ========================================================================== */
 
   /**
@@ -1264,8 +1398,9 @@
    * Thuật toán Yen's K-Shortest Paths tối ưu hóa:
    * - Tìm K tuyến đường ngắn nhất không có chu trình (loopless).
    * - Sử dụng Binary Min-Heap cho Candidate Pool B (O(log |B|)).
-   * - Early Pruning: Bỏ qua các spur node có rootCost >= chi phí của candidate thứ (K - |A|)
-   *   trong Heap, vì mọi cạnh có chi phí không âm nên không thể lọt vào Top K.
+   * - Bounded Max-Heap kích thước (K - |A|) quản lý threshold pruning:
+   *   Cho phép kiểm tra cắt tỉa spur node (Early Pruning) trong O(1) peek thay vì O(B log B).
+   * - Tiền tính toán Prefix Cost và Prefix Distance O(N).
    * - Reachability Check: Bỏ qua các spur node không còn cạnh khả dụng.
    * - Hỗ trợ toàn diện parallel edges với edge.id.
    * - Tách biệt cost và distance hoàn toàn.
@@ -1276,11 +1411,13 @@
    * @param {string|number} destinationNodeId Node đích
    * @param {number} [K=3] Số lượng tuyến đường ngắn nhất cần tìm (mặc định 3)
    * @param {Object} [options={}] Cấu hình tùy chọn
+   * @param {'time'|'distance'} [options.metric='time'] Tiêu chí cơ sở
    * @param {Function} [options.getEdgeCost] Hàm tính chi phí cạnh
    * @param {number} [options.routeOverlapThreshold] Ngưỡng lọc trùng lặp tùy chọn [0, 1]
    * @param {Object} [options.metrics] Ghi nhận số liệu benchmark
    * @param {boolean} [options.debug=false] Bật ghi log debug
    * @returns {Array<{ nodes: Array<string>, edges: Array<Object>, cost: number, distance: number|null }>}
+   * @complexity O(K · (V log V + E) + K · N · log K)
    */
   function kShortestPaths(graph, startNodeId, destinationNodeId, K = 3, options = {}) {
     const kTarget = Math.max(1, Number(K) || 3);
@@ -1307,7 +1444,7 @@
     const seenSignatures = new Set([initialSig]);
     const seenInA = new Set([initialSig]);
 
-    // Comparator cho Candidate Min-Heap:
+    // Comparator chuẩn cho Candidate Min-Heap:
     const candidateComparator = (a, b) => {
       if (Math.abs(a.priority - b.priority) > 1e-9) {
         return a.priority - b.priority;
@@ -1322,10 +1459,15 @@
       return sigA.localeCompare(sigB);
     };
 
-    /** Candidate Pool B được quản lý bằng Binary Min-Heap (O(log |B|)) */
+    /** Candidate Pool B quản lý bằng Min-Heap (O(log |B|)) */
     const candidateHeap = new PriorityQueue(candidateComparator);
 
-    const getCost = typeof options.getEdgeCost === 'function' ? options.getEdgeCost : defaultGetEdgeCost;
+    /** Bounded Max-Heap kích thước (K - |A|) quản lý threshold pruning với O(1) peek */
+    const maxCandidateComparator = (a, b) => candidateComparator(b, a);
+    const maxCandidatesHeap = new PriorityQueue(maxCandidateComparator);
+
+    const metric = options.metric || 'time';
+    const getCost = typeof options.getEdgeCost === 'function' ? options.getEdgeCost : ((edge) => defaultGetEdgeCost(edge, metric));
     const overlapThreshold = (typeof options.routeOverlapThreshold === 'number' && options.routeOverlapThreshold > 0 && options.routeOverlapThreshold <= 1)
       ? options.routeOverlapThreshold
       : null;
@@ -1334,6 +1476,18 @@
     for (let k = 1; k < kTarget; k++) {
       const prevPath = A[k - 1];
       if (!prevPath || prevPath.nodes.length < 2) break;
+
+      const neededCandidates = kTarget - A.length;
+
+      // ĐỒNG BỘ BOUNDED MAX-HEAP TRƯỚC VÒNG SPUR (O(B log B) 1 lần mỗi vòng k)
+      maxCandidatesHeap.clear();
+      const activeCandidates = candidateHeap.toArray().filter(
+        entry => !seenInA.has(entry.item._sig || _getRouteSignature(entry.item.nodes, entry.item.edges))
+      );
+      activeCandidates.sort(candidateComparator);
+      for (let cIdx = 0; cIdx < Math.min(neededCandidates, activeCandidates.length); cIdx++) {
+        maxCandidatesHeap.push(activeCandidates[cIdx].item, activeCandidates[cIdx].priority);
+      }
 
       // Tiền tính toán mảng cộng dồn Prefix Cost và Prefix Distance (O(N))
       const numEdges = prevPath.edges.length;
@@ -1360,20 +1514,12 @@
         const spurNode = prevPath.nodes[i];
         const rootCost = prefixCost[i];
 
-        // TỐI ƯU HÓA: EARLY PRUNING SPUR NODE
-        // Nếu Candidate Pool B đã chứa đủ ứng viên cần thiết (K - |A| ứng viên),
-        // và rootCost >= chi phí của ứng viên tốt nhất cần có trong heap,
-        // thì vì mọi trọng số cạnh >= 0, tổng chi phí qua spur node này chắc chắn >= rootCost
-        // và không thể lọt vào Top K. BỎ QUA KHÔNG GỌI DIJKSTRA!
-        const neededCandidates = kTarget - A.length;
-        if (candidateHeap.size() >= neededCandidates) {
-          const heapArray = candidateHeap.toArray();
-          heapArray.sort((x, y) => x.priority - y.priority);
-          const worstCandidateCost = heapArray[neededCandidates - 1].priority;
-
-          if (rootCost >= worstCandidateCost) {
+        // TỐI ƯU HÓA: EARLY PRUNING SPUR NODE VỚI BOUNDED MAX-HEAP PEEK O(1)
+        if (maxCandidatesHeap.size() >= neededCandidates) {
+          const worstCandidate = maxCandidatesHeap.peek();
+          if (worstCandidate && rootCost >= worstCandidate.priority) {
             prunedSpurNodes++;
-            continue; // Bỏ qua spur node này!
+            continue; // Bỏ qua spur node này trong O(1)!
           }
         }
 
@@ -1382,9 +1528,7 @@
         const rootDistance = prefixDistance[i];
         const rootDistanceValid = (rootDistance !== null);
 
-        // Tập các cạnh bị loại trừ khỏi spurNode:
-        // HỖ TRỢ ĐA CẠNH (PARALLEL EDGES):
-        // Chỉ cấm đúng edge identifier duy nhất. Chỉ cấm "from->to" nếu cạnh không có ID rõ ràng.
+        // Tập các cạnh bị loại trừ khỏi spurNode
         const disabledEdges = new Set();
         const rootSig = rootPathNodes.join('->');
 
@@ -1403,7 +1547,6 @@
         }
 
         // TỐI ƯU HÓA: REACHABILITY CHECK
-        // Nếu tất cả các cạnh đi ra từ spurNode đều đã bị disabled, không thể có đường đi từ spurNode
         const rawOutgoing = getGraphOutgoingEdges(graph, spurNode);
         let hasAnyUsableEdge = false;
         for (let oIdx = 0; oIdx < rawOutgoing.length; oIdx++) {
@@ -1417,13 +1560,11 @@
         }
         if (!hasAnyUsableEdge) {
           prunedSpurNodes++;
-          continue; // Bỏ qua không gọi Dijkstra
+          continue;
         }
 
-        // Tập các node bị loại trừ (tất cả các node trong rootPath ngoại trừ spurNode để chống loop)
         const disabledNodes = new Set(rootPathNodes.slice(0, i));
 
-        // Hàm lọc cạnh và node cho Dijkstra tại chặng spur mà không mutate graph
         const spurEdgeFilter = (edge) => {
           if (!edge) return false;
           const id = getEdgeIdentifier(edge);
@@ -1439,9 +1580,12 @@
           return true;
         };
 
-        // Chạy Dijkstra từ spurNode đến đích (tắt cache để không dùng kết quả có filter khác)
+        // Chạy Dijkstra từ spurNode đến đích
         const spurPath = dijkstra(graph, spurNode, destinationNodeId, {
+          metric: metric,
           getEdgeCost: getCost,
+          onInvalidEdge: options.onInvalidEdge || 'clamp',
+          assumeStringIds: options.assumeStringIds === true,
           edgeFilter: spurEdgeFilter,
           nodeFilter: spurNodeFilter,
           noCache: true,
@@ -1449,7 +1593,6 @@
         });
         dijkstraCalls++;
 
-        // Nếu tìm thấy spurPath hợp lệ -> Ghép rootPath + spurPath thành candidatePath
         if (spurPath.found && spurPath.nodes.length > 0) {
           const totalNodes = [...rootPathNodes.slice(0, -1), ...spurPath.nodes];
           const totalEdges = [...rootPathEdges, ...spurPath.edges];
@@ -1460,11 +1603,9 @@
             totalDistance = rootDistance + spurPath.distance;
           }
 
-          // Chữ ký kết hợp cả node và edge để hỗ trợ trọn vẹn parallel edges
           const signature = _getRouteSignature(totalNodes, totalEdges);
 
           if (!seenSignatures.has(signature)) {
-            // Kiểm tra tùy chọn overlap threshold nếu được cấu hình
             let skipDueToOverlap = false;
             if (overlapThreshold !== null) {
               const tempCandidate = { nodes: totalNodes, edges: totalEdges };
@@ -1485,7 +1626,20 @@
                 distance: totalDistance,
                 _sig: signature
               };
+
+              // Thêm vào Min-Heap chính
               candidateHeap.push(candidate, totalCost);
+
+              // Cập nhật Bounded Max-Heap trong O(log K)
+              if (maxCandidatesHeap.size() < neededCandidates) {
+                maxCandidatesHeap.push(candidate, totalCost);
+              } else {
+                const worst = maxCandidatesHeap.peek();
+                if (candidateComparator({ priority: totalCost, item: candidate }, worst) < 0) {
+                  maxCandidatesHeap.pop();
+                  maxCandidatesHeap.push(candidate, totalCost);
+                }
+              }
             }
           }
         }
@@ -1504,7 +1658,6 @@
         break;
       }
 
-      // Nếu không còn tuyến ứng viên nào trong Heap -> dừng sớm
       if (!bestCandidate) {
         break;
       }
@@ -1527,9 +1680,7 @@
      ========================================================================== */
 
   /**
-   * Chuyển đổi kết quả đường đi từ Dijkstra thành định dạng Route chuẩn của SafeRoute UI:
-   * Giúp Dijkstra hoạt động liền mạch như một local fallback hoặc rerouting engine.
-   * 
+   * Chuyển đổi kết quả đường đi từ Dijkstra thành định dạng Route chuẩn của SafeRoute UI
    * @param {Object} dijkstraRoute Kết quả từ dijkstra hoặc kShortestPaths
    * @param {Object} graph Đồ thị nguồn
    * @param {number} [index=0] Chỉ số tuyến
@@ -1607,7 +1758,6 @@
     calculateRouteOverlap
   };
 
-  // Môi trường trình duyệt (Browser)
   if (typeof window !== 'undefined') {
     window.PriorityQueue = PriorityQueue;
     window.DijkstraCache = DijkstraCache;
@@ -1619,7 +1769,6 @@
     window.Dijkstra = DijkstraEngine;
   }
 
-  // Môi trường Node.js / CommonJS
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = DijkstraEngine;
   }

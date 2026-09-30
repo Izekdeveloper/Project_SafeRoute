@@ -251,12 +251,20 @@ console.log('\n--- Test Group 7: Cạnh cost=0 & Phát hiện Chi phí Âm / NaN
   };
   let threw = false;
   try {
-    dijkstra(negGraph, 'A', 'B');
+    dijkstra(negGraph, 'A', 'B', { onInvalidEdge: 'throw' });
   } catch (err) {
     threw = true;
     assert(err.message.includes('chi phí âm') || err.message.includes('negative'), 'Bắt lỗi rõ ràng khi phát hiện cạnh có trọng số âm');
   }
   assert(threw === true, 'Throw Exception ngăn chặn kết quả sai do trọng số âm');
+
+  // Kiểm tra chế độ clamp (mặc định an toàn)
+  const resClamp = dijkstra(negGraph, 'A', 'B', { onInvalidEdge: 'clamp' });
+  assert(resClamp.found === true && resClamp.cost === 0, 'onInvalidEdge clamp: đưa cost âm về 0 mà không crash');
+
+  // Kiểm tra chế độ skip
+  const resSkip = dijkstra(negGraph, 'A', 'B', { onInvalidEdge: 'skip' });
+  assert(resSkip.found === false, 'onInvalidEdge skip: bỏ qua cạnh âm an toàn');
 
   // Cạnh NaN / Infinity -> bỏ qua an toàn
   const nanGraph = {

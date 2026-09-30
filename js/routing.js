@@ -79,14 +79,30 @@ function isPointInVietnam(lat, lng) {
          pointInPolygon(lat, lng, PHU_QUOC_POLYGON);
 }
 
+const _routeInVNCache = new WeakMap();
+
 function isRouteInsideVietnam(route) {
+  if (!route || typeof route !== 'object') return false;
+  const cached = _routeInVNCache.get(route);
+  if (cached !== undefined) return cached;
+
   const coords = route.coords;
-  if (!coords || coords.length === 0) return false;
+  if (!coords || coords.length === 0) {
+    _routeInVNCache.set(route, false);
+    return false;
+  }
   const step = Math.max(1, Math.floor(coords.length / 120));
   for (let i = 0; i < coords.length; i += step) {
-    if (!isPointInVietnam(coords[i][0], coords[i][1])) return false;
+    if (!isPointInVietnam(coords[i][0], coords[i][1])) {
+      _routeInVNCache.set(route, false);
+      return false;
+    }
   }
-  if (!isPointInVietnam(coords[coords.length - 1][0], coords[coords.length - 1][1])) return false;
+  if (!isPointInVietnam(coords[coords.length - 1][0], coords[coords.length - 1][1])) {
+    _routeInVNCache.set(route, false);
+    return false;
+  }
+  _routeInVNCache.set(route, true);
   return true;
 }
 
@@ -144,8 +160,8 @@ class RouteCache {
     this.cache.delete(key);
     this.cache.set(key, entry);
 
-    // Trả về bản sao để tránh đột biến dữ liệu
-    return JSON.parse(JSON.stringify(entry.data));
+    // Trả về tham chiếu bất biến (immutable reference)
+    return entry.data;
   }
 
   set(key, data) {
@@ -158,8 +174,20 @@ class RouteCache {
     }
 
     const ttl = (typeof window !== 'undefined' && window.OSRM_CACHE_TTL) ? window.OSRM_CACHE_TTL : this.ttlMs;
+    if (Array.isArray(data)) {
+      for (let i = 0; i < data.length; i++) {
+        const item = data[i];
+        if (item && typeof item === 'object' && !Object.isFrozen(item)) {
+          Object.freeze(item);
+        }
+      }
+      if (!Object.isFrozen(data)) Object.freeze(data);
+    } else if (typeof data === 'object' && !Object.isFrozen(data)) {
+      Object.freeze(data);
+    }
+
     this.cache.set(key, {
-      data: JSON.parse(JSON.stringify(data)),
+      data,
       createdAt: Date.now(),
       expiresAt: Date.now() + ttl
     });
@@ -350,8 +378,18 @@ async function fetchOsrmRoute(waypoints, options = {}, externalSignal = null, me
       if (settled) return;
       settled = true;
       cleanup();
-      // Bản sao sâu (deep clone) để tránh các caller làm thay đổi thuộc tính của nhau
-      resolve(routes && Array.isArray(routes) ? JSON.parse(JSON.stringify(routes)) : []);
+      // Immutable contract: Trả về reference đã frozen, loại bỏ JSON.parse(JSON.stringify) tốn kém
+      if (routes && Array.isArray(routes)) {
+        for (let i = 0; i < routes.length; i++) {
+          const r = routes[i];
+          if (r && typeof r === 'object' && !Object.isFrozen(r)) {
+            Object.freeze(r);
+          }
+        }
+        resolve(routes);
+      } else {
+        resolve([]);
+      }
     };
 
     const onCallerAbort = () => {
@@ -530,8 +568,11 @@ async function findSafeRoutes(start, end, options = {}) {
 
   // 4. CHỈ tính rủi ro cho tối đa MAX_SUGGESTED_ROUTES tuyến được chọn hiển thị
   // Không tính rủi ro cho các tuyến ứng viên chắc chắn bị loại (tiết kiệm CPU)
-  validRoutes.forEach(r => {
-    r.riskScore = calculateRouteRisk(r, activeIncidentSnapshot);
+  // Tạo shallow copy để đảm bảo route đã đóng băng trong RouteCache không bị đột biến
+  validRoutes = validRoutes.map(r => {
+    const copy = { ...r };
+    copy.riskScore = calculateRouteRisk(copy, activeIncidentSnapshot);
+    return copy;
   });
 
   const finalRoutes = validRoutes.map((route, index) => ({
@@ -662,6 +703,8 @@ async function planMultimodalFallback(start, end, signal = null, metrics = null)
     };
   }
 
+  roadToOriginHub = { ...roadToOriginHub };
+  roadFromDestHub = { ...roadFromDestHub };
   roadToOriginHub.riskScore = calculateRouteRisk(roadToOriginHub);
   roadFromDestHub.riskScore = calculateRouteRisk(roadFromDestHub);
 
@@ -957,16 +1000,28 @@ function isIncidentNearRouteBbox(incBbox, routeBufferedBbox) {
 --------------------------------------------------------------- */
 
 /**
- * WeakMap lưu trữ kết quả phân tích sự cố của tuyến đường (riskScore, rawRisk, items).
+ * WeakMap lưu trữ kết quả phân tích sự cố của tuyến đường (riskScore, rawRisk, items, _snapshotVersion).
  * Tự động giải phóng khi route bị thu hồi bởi Garbage Collector (zero memory leak).
- * @type {WeakMap<object, { riskScore: number, rawRisk: number, items: Array<object> }>}
+ * @type {WeakMap<object, { riskScore: number, rawRisk: number, items: Array<object>, _snapshotVersion: number }>}
  */
 const _routeIncidentAnalysisCache = new WeakMap();
+
+/**
+ * Phiên bản của dữ liệu snapshot sự cố, tăng tự động khi có sự kiện 'incidents-changed'.
+ */
+let _incidentSnapshotVersion = 0;
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('incidents-changed', () => {
+    _incidentSnapshotVersion++;
+  });
+}
 
 /**
  * Tạo bản chụp trạng thái hoạt động của sự cố (Active Incident Snapshot) cho một chu kỳ tìm đường:
  * - Tính độ tin cậy confidence duy nhất 1 lần cho mỗi incident với mốc thời gian routingNow nhất quán.
  * - Loại bỏ sớm các incident đã hết hạn (c <= 0.1) để giảm tải cho toàn bộ các bước tính toán sau.
+ * - Gắn _snapshotVersion để kiểm tra tính hợp lệ của cache.
  * - Không làm thay đổi (mutate) incident gốc.
  * 
  * @param {Array<object>} [incList] - Danh sách incident thô
@@ -1003,6 +1058,7 @@ function createActiveIncidentSnapshot(incList, routingNow = Date.now()) {
       roadCoords: inc.roadCoords || null
     });
   }
+  snapshot._snapshotVersion = _incidentSnapshotVersion;
   return snapshot;
 }
 
@@ -1160,9 +1216,14 @@ function analyzeRouteIncidents(route, incidentSnapshot = null) {
   }
 
   // 1. Kiểm tra cache WeakMap
-  const cached = _routeIncidentAnalysisCache.get(route);
-  if (cached) {
-    return cached;
+  // Khi incidentSnapshot được truyền vào khác với snapshot toàn cục -> bypass cache hoàn toàn (caller truyền snapshot tùy chỉnh)
+  const isCustomSnapshot = Boolean(incidentSnapshot && incidentSnapshot._snapshotVersion !== _incidentSnapshotVersion);
+
+  if (!isCustomSnapshot) {
+    const cached = _routeIncidentAnalysisCache.get(route);
+    if (cached && cached._snapshotVersion === _incidentSnapshotVersion) {
+      return cached;
+    }
   }
 
   const snapshot = incidentSnapshot || createActiveIncidentSnapshot();
@@ -1267,10 +1328,13 @@ function analyzeRouteIncidents(route, incidentSnapshot = null) {
   const analysis = {
     riskScore,
     rawRisk: raw,
-    items
+    items,
+    _snapshotVersion: _incidentSnapshotVersion
   };
 
-  _routeIncidentAnalysisCache.set(route, analysis);
+  if (!isCustomSnapshot) {
+    _routeIncidentAnalysisCache.set(route, analysis);
+  }
   return analysis;
 }
 
@@ -1515,6 +1579,19 @@ function _clusterIncidents(activeIncidents) {
  * - Tối ưu early break: ngay khi có 2 điểm trượt (mismatch > 1) -> dừng sớm lập tức (return false)
  * - Đạt tỷ lệ trùng lặp >= 85% (ngưỡng chuẩn) -> return true
  */
+function _fastSampleMatch(ca, cb, samples = 30, tol = 0.0005) {
+  if (!ca || !cb || ca.length < 2 || cb.length < 2) return false;
+  const stepA = (ca.length - 1) / (samples - 1);
+  const stepB = (cb.length - 1) / (samples - 1);
+  let matched = 0;
+  for (let i = 0; i < samples; i++) {
+    const pa = ca[Math.round(i * stepA)];
+    const pb = cb[Math.round(i * stepB)];
+    if (Math.abs(pa[0] - pb[0]) < tol && Math.abs(pa[1] - pb[1]) < tol) matched++;
+  }
+  return (matched / samples) >= 0.85;
+}
+
 function _areRoutesDuplicate(r1, r2) {
   if (!r1 || !r2) return false;
   if (r1 === r2) return true;
@@ -1563,6 +1640,9 @@ function _areRoutesDuplicate(r1, r2) {
       }
     }
   }
+
+  // LEVEL 2.5: Fast Sample Match (30 điểm mẫu, dung sai ~55m)
+  if (!_fastSampleMatch(c1, c2, 30, 0.0005)) return false;
 
   // LEVEL 3: Exact Geometry Comparison (Symmetric Overlap Check)
   const minDistFn = (typeof window !== 'undefined' && window.minDistanceToPolyline)
@@ -1718,6 +1798,16 @@ async function _generateAvoidanceRoutes(start, end, baseRoutes, signal = null, m
     }
     if (!couldBeNearAny) continue;
 
+    // Fast reject bằng sample points
+    let couldBeClose = false;
+    for (const m of baseMetas) {
+      if (!m || !m.samplePoints) { couldBeClose = true; break; }
+      const dSample = minDistFn(item.lat, item.lng, m.samplePoints);
+      if (dSample < 500) { couldBeClose = true; break; }
+    }
+    if (!couldBeClose) continue; // chắc chắn > 350m
+
+    // Chỉ khi qua prefilter mới chạy full polyline
     let minD = Infinity;
     for (const r of baseRoutes) {
       const d = minDistFn(item.lat, item.lng, r.coords);
@@ -2248,11 +2338,16 @@ if (typeof window !== 'undefined') {
   window._getRouteSamplePoints = _getRouteSamplePoints;
   window._areRoutesDuplicate = _areRoutesDuplicate;
   window._deduplicateRoutes = _deduplicateRoutes;
+  window._fastSampleMatch = _fastSampleMatch;
   window._clusterIncidents = _clusterIncidents;
   window.createActiveIncidentSnapshot = createActiveIncidentSnapshot;
   window.getNearestPointOnPolyline = getNearestPointOnPolyline;
   window.minDistanceToPolyline = minDistanceToPolyline;
   window.analyzeRouteIncidents = analyzeRouteIncidents;
+  window._routeInVNCache = _routeInVNCache;
+  window.isRouteInsideVietnam = isRouteInsideVietnam;
+  window._incidentSnapshotVersion = _incidentSnapshotVersion;
+  window.incrementIncidentSnapshotVersion = () => ++_incidentSnapshotVersion;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -2279,17 +2374,22 @@ if (typeof module !== 'undefined' && module.exports) {
     _routeMetadataCache,
     _incidentBboxCache,
     _routeIncidentAnalysisCache,
+    _routeInVNCache,
+    isRouteInsideVietnam,
     getRouteMetadata,
     getIncidentBbox,
     isIncidentNearRouteBbox,
     _getRouteGeometrySignature,
     _getRouteSamplePoints,
     _areRoutesDuplicate,
+    _fastSampleMatch,
     _deduplicateRoutes,
     _clusterIncidents,
     createActiveIncidentSnapshot,
     getNearestPointOnPolyline,
     minDistanceToPolyline,
-    analyzeRouteIncidents
+    analyzeRouteIncidents,
+    get _incidentSnapshotVersion() { return _incidentSnapshotVersion; },
+    incrementIncidentSnapshotVersion: () => ++_incidentSnapshotVersion
   };
 }

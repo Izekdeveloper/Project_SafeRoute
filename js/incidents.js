@@ -73,8 +73,31 @@ function cleanupExpiredIncidents() {
   }
 }
 
-// Chạy định kỳ dọn dẹp decay mỗi 60 giây
-setInterval(cleanupExpiredIncidents, 60 * 1000);
+// Tự điều phối dọn dẹp định kỳ: Tạm dừng khi tab ẩn (document.hidden) để tiết kiệm pin/CPU,
+// và chạy catch-up ngay khi tab hiển thị trở lại.
+let _cleanupTimer = null;
+function _scheduleCleanup() {
+  clearTimeout(_cleanupTimer);
+  if (typeof document !== 'undefined' && document.hidden) return;
+  _cleanupTimer = setTimeout(() => {
+    cleanupExpiredIncidents();
+    _scheduleCleanup();
+  }, 60000);
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      clearTimeout(_cleanupTimer);
+    } else {
+      cleanupExpiredIncidents();
+      _scheduleCleanup();
+    }
+  });
+  _scheduleCleanup();
+} else {
+  setInterval(cleanupExpiredIncidents, 60000); // Node.js fallback
+}
 
 function _isDebugMerge() {
   return (typeof window !== 'undefined' && window.DEBUG_MERGE != null)
@@ -136,10 +159,54 @@ function normalizeStreetName(rawName) {
 }
 
 /**
- * Bộ nhớ đệm lưu hình học các đoạn đường đã truy vấn để tái sử dụng tức thì,
- * tránh gọi lặp lại API bên ngoài và loại bỏ độ trễ hiển thị.
+ * Bộ nhớ đệm LRU có giới hạn dung lượng và thời gian sống (TTL) cho road segments,
+ * ngăn ngừa rò rỉ bộ nhớ (memory leak) khi hệ thống hoạt động lâu dài.
  */
-const _roadSegmentCache = new Map();
+class _RoadSegmentLRU {
+  constructor(maxEntries = 500, ttlMs = 600000) {
+    this.maxEntries = maxEntries;
+    this.ttlMs = ttlMs;
+    this.cache = new Map();
+  }
+
+  get(key) {
+    if (!key || !this.cache.has(key)) return null;
+    const entry = this.cache.get(key);
+    if (Date.now() > entry.expiresAt) {
+      this.cache.delete(key);
+      return null;
+    }
+    // Refresh thứ tự truy cập trong LRU Map
+    this.cache.delete(key);
+    this.cache.set(key, entry);
+    return entry.value;
+  }
+
+  set(key, value) {
+    if (!key) return;
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    } else if (this.cache.size >= this.maxEntries) {
+      const oldestKey = this.cache.keys().next().value;
+      if (oldestKey) this.cache.delete(oldestKey);
+    }
+    this.cache.set(key, { value, expiresAt: Date.now() + this.ttlMs });
+  }
+
+  has(key) {
+    return this.get(key) !== null;
+  }
+
+  clear() {
+    this.cache.clear();
+  }
+
+  size() {
+    return this.cache.size;
+  }
+}
+
+const _roadSegmentCache = new _RoadSegmentLRU(500, 600000);
 
 /**
  * Tính khoảng cách nhỏ nhất từ một tọa độ (lat, lng) tới tập điểm (pts)
@@ -538,18 +605,34 @@ async function buildIncidentRoadSegment(incident) {
     } catch (_) {}
   }
 
-  // Nếu vẫn chưa lấy được geometry: KHÔNG fallback đường thẳng, lên lịch tự động retry sau 1.5s
+  // Nếu vẫn chưa lấy được geometry: KHÔNG fallback đường thẳng, lên lịch tự động retry có giới hạn (exponential backoff)
   if (!fullGeometry || fullGeometry.length < 2) {
-    console.debug('[SafeRoute][SEGMENT]', {
-      incidentId: incident.id,
-      nodeCount: nodes.length,
-      startNode: null,
-      endNode: null,
-      roadPointCount: 0,
-      segmentDistance: 0,
-      success: false,
-      reason: 'Đang đợi nạp road geometry... lên lịch thử lại tự động'
-    });
+    incident._retryCount = (incident._retryCount || 0) + 1;
+    const MAX_SEGMENT_RETRY = 5;
+    if (incident._retryCount > MAX_SEGMENT_RETRY) {
+      if (_isDebugMerge()) {
+        console.warn(`[SafeRoute] Bỏ retry segment sau ${MAX_SEGMENT_RETRY} lần:`, incident.id);
+      }
+      return null;
+    }
+
+    const retryDelay = 1500 * Math.pow(2, incident._retryCount - 1);
+
+    if (_isDebugMerge()) {
+      console.debug('[SafeRoute][SEGMENT]', {
+        incidentId: incident.id,
+        retryCount: incident._retryCount,
+        maxRetries: MAX_SEGMENT_RETRY,
+        delayMs: retryDelay,
+        nodeCount: nodes.length,
+        startNode: null,
+        endNode: null,
+        roadPointCount: 0,
+        segmentDistance: 0,
+        success: false,
+        reason: 'Đang đợi nạp road geometry... lên lịch thử lại tự động'
+      });
+    }
 
     if (!incident._retrySegmentTimer) {
       incident._retrySegmentTimer = setTimeout(async () => {
@@ -560,10 +643,13 @@ async function buildIncidentRoadSegment(incident) {
             window.renderIncidents();
           }
         }
-      }, 1500);
+      }, retryDelay);
     }
     return null;
   }
+
+  // Reset retry counter khi đã lấy được geometry thành công
+  incident._retryCount = 0;
 
   // Lưu lại fullRoadGeometry vào incident để tái sử dụng
   incident.fullRoadGeometry = fullGeometry;
@@ -1289,6 +1375,8 @@ if (typeof window !== 'undefined') {
   window.sliceRoadBetweenSnaps = sliceRoadBetweenSnaps;
   window.buildIncidentRoadSegment = buildIncidentRoadSegment;
   window.logMergeDebug = logMergeDebug;
+  window._RoadSegmentLRU = _RoadSegmentLRU;
+  window._roadSegmentCache = _roadSegmentCache;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -1310,6 +1398,8 @@ if (typeof module !== 'undefined' && module.exports) {
     extractStreetName,
     normalizeStreetName,
     computeBearingDegrees,
-    bearingAngleDiff
+    bearingAngleDiff,
+    _RoadSegmentLRU,
+    _roadSegmentCache
   };
 }

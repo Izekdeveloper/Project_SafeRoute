@@ -650,57 +650,103 @@ class Graph {
 
   /**
    * Tìm cạnh gần tọa độ nhất phù hợp với topology (Section 8: nearest edge candidates)
+   * Sử dụng spatialGrid prefilter trong bán kính 3 cells (~165m) để giảm độ phức tạp từ O(E) xuống O(1) amortized,
+   * có fallback duyệt toàn bộ đồ thị nếu không tìm thấy candidate phù hợp.
    */
   findNearestEdge(lat, lng, context = {}) {
-    let nearestEdge = null;
-    let minDistance = Infinity;
-    let bestProjPoint = null;
-    let bestT = 0;
-    let bestBearing = 0;
+    if (typeof lat !== 'number' || typeof lng !== 'number' || isNaN(lat) || isNaN(lng)) {
+      return null;
+    }
 
-    for (const edge of this.edges.values()) {
-      if (context.roadId && edge.roadId && context.roadId !== edge.roadId) continue;
-      if (context.osmWayId && edge.osmWayId && context.osmWayId !== edge.osmWayId) continue;
-      if (context.layer != null && edge.layer != null && Number(context.layer) !== Number(edge.layer)) continue;
+    const _searchEdges = (edgeIterable) => {
+      let nearestEdge = null;
+      let minDistance = Infinity;
+      let bestProjPoint = null;
+      let bestT = 0;
+      let bestBearing = 0;
 
-      let segs = [];
-      if (Array.isArray(edge.geometry) && edge.geometry.length >= 2) {
-        segs = edge.geometry;
-      } else {
-        const nFrom = this.nodes.get(edge.from);
-        const nTo = this.nodes.get(edge.to);
-        if (nFrom && nTo) {
-          segs = [[nFrom.lat, nFrom.lng], [nTo.lat, nTo.lng]];
+      for (const edge of edgeIterable) {
+        if (context.roadId && edge.roadId && context.roadId !== edge.roadId) continue;
+        if (context.osmWayId && edge.osmWayId && context.osmWayId !== edge.osmWayId) continue;
+        if (context.layer != null && edge.layer != null && Number(context.layer) !== Number(edge.layer)) continue;
+
+        let segs = [];
+        if (Array.isArray(edge.geometry) && edge.geometry.length >= 2) {
+          segs = edge.geometry;
+        } else {
+          const nFrom = this.nodes.get(edge.from);
+          const nTo = this.nodes.get(edge.to);
+          if (nFrom && nTo) {
+            segs = [[nFrom.lat, nFrom.lng], [nTo.lat, nTo.lng]];
+          }
+        }
+
+        if (segs.length < 2) continue;
+
+        for (let i = 0; i < segs.length - 1; i++) {
+          const p1 = segs[i];
+          const p2 = segs[i + 1];
+          const proj = projectPointToSegment([lat, lng], p1, p2);
+          const d = haversineDistanceMeters(lat, lng, proj.pt[0], proj.pt[1]);
+
+          if (d < minDistance) {
+            minDistance = d;
+            nearestEdge = edge;
+            bestProjPoint = proj.pt;
+            bestT = proj.t;
+            bestBearing = computeBearingDegrees(p1[0], p1[1], p2[0], p2[1]);
+          }
         }
       }
 
-      if (segs.length < 2) continue;
+      if (!nearestEdge) return null;
 
-      for (let i = 0; i < segs.length - 1; i++) {
-        const p1 = segs[i];
-        const p2 = segs[i + 1];
-        const proj = projectPointToSegment([lat, lng], p1, p2);
-        const d = haversineDistanceMeters(lat, lng, proj.pt[0], proj.pt[1]);
+      return {
+        edge: nearestEdge,
+        projectedPoint: bestProjPoint,
+        distance: minDistance,
+        t: bestT,
+        bearing: bestBearing
+      };
+    };
 
-        if (d < minDistance) {
-          minDistance = d;
-          nearestEdge = edge;
-          bestProjPoint = proj.pt;
-          bestT = proj.t;
-          bestBearing = computeBearingDegrees(p1[0], p1[1], p2[0], p2[1]);
+    // 1. Spatial Grid prefilter: lấy candidate nodes trong bán kính 3 cells (~165m)
+    if (this.spatialGrid && this.spatialGrid.size > 0) {
+      const cellSize = 0.0005;
+      const gx = Math.floor(lng / cellSize);
+      const gy = Math.floor(lat / cellSize);
+      const radiusCells = context.searchRadiusCells || 3;
+      const candidateEdges = new Map();
+
+      for (let dx = -radiusCells; dx <= radiusCells; dx++) {
+        for (let dy = -radiusCells; dy <= radiusCells; dy++) {
+          const key = `${gx + dx},${gy + dy}`;
+          const nodeIds = this.spatialGrid.get(key);
+          if (!nodeIds) continue;
+
+          for (const nodeId of nodeIds) {
+            const outEdges = this.adjacency.get(nodeId);
+            if (outEdges) {
+              for (const e of outEdges) candidateEdges.set(e.id, e);
+            }
+            const inEdges = this.incoming.get(nodeId);
+            if (inEdges) {
+              for (const e of inEdges) candidateEdges.set(e.id, e);
+            }
+          }
+        }
+      }
+
+      if (candidateEdges.size > 0) {
+        const candidateResult = _searchEdges(candidateEdges.values());
+        if (candidateResult) {
+          return candidateResult;
         }
       }
     }
 
-    if (!nearestEdge) return null;
-
-    return {
-      edge: nearestEdge,
-      projectedPoint: bestProjPoint,
-      distance: minDistance,
-      t: bestT,
-      bearing: bestBearing
-    };
+    // 2. Fallback: Nếu không tìm thấy edge nào trong candidate set (hoặc set rỗng), fallback duyệt toàn bộ edges
+    return _searchEdges(this.edges.values());
   }
 
   /**

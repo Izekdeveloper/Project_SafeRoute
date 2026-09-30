@@ -181,22 +181,48 @@ function setStartLocation(lat, lng, label, source) {
   renderNearbyPanel();
 }
 
+let _START_ICON = null;
+let _END_ICON = null;
+
+function _getStartIcon() {
+  if (!_START_ICON && typeof L !== 'undefined') {
+    _START_ICON = L.divIcon({
+      className: '',
+      html: '<div class="start-marker-icon"><i class="fa-solid fa-person-walking"></i></div>',
+      iconSize: [34, 34],
+      iconAnchor: [17, 32]
+    });
+  }
+  return _START_ICON;
+}
+
+function _getEndIcon() {
+  if (!_END_ICON && typeof L !== 'undefined') {
+    _END_ICON = L.divIcon({
+      className: '',
+      html: '<div class="end-marker-icon"><i class="fa-solid fa-flag-checkered"></i></div>',
+      iconSize: [36, 36],
+      iconAnchor: [18, 34]
+    });
+  }
+  return _END_ICON;
+}
+
 function updateStartMarker(lat, lng, label) {
   if (!map) return;
-  if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
-  const icon = L.divIcon({
-    className: '',
-    html: '<div class="start-marker-icon"><i class="fa-solid fa-person-walking"></i></div>',
-    iconSize: [34, 34],
-    iconAnchor: [17, 32]
-  });
-  startMarker = L.marker([lat, lng], { icon, zIndexOffset: 1000 }).addTo(map);
-  if (typeof window !== 'undefined') window.startMarker = startMarker;
-  startMarker.bindPopup(`
+  const popupHtml = `
     <div class="popup-box">
       <div class="p-head"><i class="fa-solid fa-location-dot" style="color:var(--primary)"></i> Điểm bắt đầu</div>
       <div class="p-row"><b>${escapeHtml(label)}</b></div>
-    </div>`);
+    </div>`;
+  if (startMarker) {
+    startMarker.setLatLng([lat, lng]);
+    startMarker.setPopupContent(popupHtml);
+  } else {
+    startMarker = L.marker([lat, lng], { icon: _getStartIcon(), zIndexOffset: 1000 }).addTo(map);
+    startMarker.bindPopup(popupHtml);
+    if (typeof window !== 'undefined') window.startMarker = startMarker;
+  }
 }
 
 function setEndLocation(lat, lng, label, source) {
@@ -209,20 +235,19 @@ function setEndLocation(lat, lng, label, source) {
 
 function updateEndMarker(lat, lng, label) {
   if (!map) return;
-  if (endMarker) { map.removeLayer(endMarker); endMarker = null; }
-  const icon = L.divIcon({
-    className: '',
-    html: '<div class="end-marker-icon"><i class="fa-solid fa-flag-checkered"></i></div>',
-    iconSize: [36, 36],
-    iconAnchor: [18, 34]
-  });
-  endMarker = L.marker([lat, lng], { icon, zIndexOffset: 1000 }).addTo(map);
-  if (typeof window !== 'undefined') window.endMarker = endMarker;
-  endMarker.bindPopup(`
+  const popupHtml = `
     <div class="popup-box">
       <div class="p-head"><i class="fa-solid fa-flag-checkered" style="color:#dc2626"></i> Điểm đến</div>
       <div class="p-row"><b>${escapeHtml(label)}</b></div>
-    </div>`);
+    </div>`;
+  if (endMarker) {
+    endMarker.setLatLng([lat, lng]);
+    endMarker.setPopupContent(popupHtml);
+  } else {
+    endMarker = L.marker([lat, lng], { icon: _getEndIcon(), zIndexOffset: 1000 }).addTo(map);
+    endMarker.bindPopup(popupHtml);
+    if (typeof window !== 'undefined') window.endMarker = endMarker;
+  }
 }
 
 /**
@@ -242,7 +267,8 @@ function selectEndFromMap(latlng) {
   }
 }
 
-function reverseGeocodeEndLabel(lat, lng) {
+let _endReverseTimer = null;
+function _doReverseGeocodeEnd(lat, lng) {
   fetch('https://nominatim.openstreetmap.org/reverse?' + new URLSearchParams({
     format: 'json', lat: String(lat), lon: String(lng), zoom: '18', addressdetails: '1', 'accept-language': 'vi'
   }))
@@ -255,7 +281,7 @@ function reverseGeocodeEndLabel(lat, lng) {
         const input = document.getElementById('end-input');
         if (input) input.value = lbl;
         if (endMarker) {
-          endMarker.bindPopup(`
+          endMarker.setPopupContent(`
             <div class="popup-box">
               <div class="p-head"><i class="fa-solid fa-flag-checkered" style="color:#dc2626"></i> Điểm đến</div>
               <div class="p-row"><b>${escapeHtml(lbl)}</b></div>
@@ -263,6 +289,11 @@ function reverseGeocodeEndLabel(lat, lng) {
         }
       }
     }).catch(() => {});
+}
+
+function reverseGeocodeEndLabel(lat, lng) {
+  clearTimeout(_endReverseTimer);
+  _endReverseTimer = setTimeout(() => _doReverseGeocodeEnd(lat, lng), 500);
 }
 
 /**
@@ -282,7 +313,8 @@ function selectStartFromMap(latlng) {
   }
 }
 
-function reverseGeocodeStartLabel(lat, lng) {
+let _startReverseTimer = null;
+function _doReverseGeocodeStart(lat, lng) {
   fetch('https://nominatim.openstreetmap.org/reverse?' + new URLSearchParams({
     format: 'json', lat: String(lat), lon: String(lng), zoom: '18', addressdetails: '1', 'accept-language': 'vi'
   }))
@@ -295,7 +327,7 @@ function reverseGeocodeStartLabel(lat, lng) {
         const input = document.getElementById('start-input');
         if (input) input.value = lbl;
         if (startMarker) {
-          startMarker.bindPopup(`
+          startMarker.setPopupContent(`
             <div class="popup-box">
               <div class="p-head"><i class="fa-solid fa-location-dot" style="color:var(--primary)"></i> Điểm bắt đầu</div>
               <div class="p-row"><b>${escapeHtml(lbl)}</b></div>
@@ -303,6 +335,11 @@ function reverseGeocodeStartLabel(lat, lng) {
         }
       }
     }).catch(() => {});
+}
+
+function reverseGeocodeStartLabel(lat, lng) {
+  clearTimeout(_startReverseTimer);
+  _startReverseTimer = setTimeout(() => _doReverseGeocodeStart(lat, lng), 500);
 }
 
 /**
@@ -379,211 +416,267 @@ function findMidpointOnPolyline(coords) {
 }
 
 /**
- * Vẽ các điểm sự cố giao thông lên LayerGroup trên bản đồ
+ * Xây dựng một LayerGroup độc lập cho một sự cố (bao gồm polyline / marker / popup).
+ * Giúp renderIncidents thực hiện incremental update thay vì clearLayers() toàn bộ.
+ * 
+ * @param {object} inc 
+ * @param {number} currentC 
+ * @param {number} now 
+ * @returns {L.LayerGroup}
+ */
+function _buildIncidentLayer(inc, currentC, now) {
+  const layer = L.layerGroup();
+  const typesMeta = (typeof window !== 'undefined' && window.INCIDENT_TYPES) ? window.INCIDENT_TYPES : _INCIDENT_TYPES;
+  const levelsMeta = (typeof window !== 'undefined' && window.LEVEL_LABEL) ? window.LEVEL_LABEL : _LEVEL_LABEL;
+  const esc = (typeof window !== 'undefined' && window.escapeHtml) ? window.escapeHtml : _escapeHtml;
+  const colorFn = (typeof window !== 'undefined' && window.getConfidenceColor) ? window.getConfidenceColor : () => 'var(--risk-mid)';
+  const fmtDate = (typeof window !== 'undefined' && window.formatDateTime) ? window.formatDateTime : () => '';
+  const fmtRel = (typeof window !== 'undefined' && window.formatRelativeTime) ? window.formatRelativeTime : () => '';
+
+  const meta = typesMeta[inc.type] || { emoji: '⚠️', label: 'Sự cố', color: '#e3492c', renderMode: 'point' };
+  const markerOpacity = Math.min(1.0, Math.max(0.85, 0.75 + (currentC / 100) * 0.25));
+  const confColor = colorFn(currentC);
+
+  const isHighSeverity = (inc.level === 'cao');
+  const levelColor = isHighSeverity ? 'var(--risk-high)' : (inc.level === 'trungbinh' ? 'var(--risk-mid)' : 'var(--risk-low)');
+  const incidentColor = meta.color || (isHighSeverity ? '#ef4444' : '#f59e0b');
+
+  const renderMode = inc.renderMode 
+    || (typeof window !== 'undefined' && window.INCIDENT_RENDER_MODE && window.INCIDENT_RENDER_MODE[inc.type])
+    || meta.renderMode 
+    || 'point';
+
+  const segmentCoords = (inc.roadCoords && inc.roadCoords.length >= 2) 
+    ? inc.roadCoords 
+    : ((inc.segmentCoords && inc.segmentCoords.length >= 2) ? inc.segmentCoords : null);
+
+  const isSegmentMode = (renderMode === 'segment') && Boolean(segmentCoords && segmentCoords.length >= 2);
+
+  const startedTs = inc.startedAt || inc.createdAt;
+  const confirmedTs = inc.lastConfirmedAt || inc.createdAt;
+  const startedText = startedTs ? `${fmtDate(startedTs)} (${fmtRel(startedTs)})` : '';
+  const updatedText = confirmedTs ? `${fmtDate(confirmedTs)} (${fmtRel(confirmedTs)})` : '';
+  const totalLen = Math.round(inc.segmentLengthMeters || inc.farthestDistance || 0);
+
+  if (isSegmentMode && segmentCoords) {
+    // 1. VẼ ĐOẠN ĐƯỜNG POLYLINE CHO SỰ CỐ DẠNG SEGMENT
+    L.polyline(segmentCoords, {
+      color: incidentColor,
+      weight: 14,
+      opacity: 0.35,
+      lineCap: 'round',
+      lineJoin: 'round'
+    }).addTo(layer);
+
+    const roadPolyline = L.polyline(segmentCoords, {
+      color: incidentColor,
+      weight: 7,
+      opacity: 0.95,
+      lineCap: 'round',
+      lineJoin: 'round'
+    }).addTo(layer);
+
+    roadPolyline.bindTooltip(
+      `<div style="font-weight:700;font-size:12px;color:${incidentColor};">
+        ${meta.emoji} Đoạn đường ${esc(meta.label)}${inc.roadName ? ' (' + esc(inc.roadName) + ')' : ''}
+      </div>
+      <div style="font-size:11px;color:#333;">
+        Chiều dài: ~${totalLen}m · ${inc.reporterCount || 2} người báo cáo
+      </div>`,
+      { sticky: true }
+    );
+
+    if (inc.nodes && inc.nodes.length > 1) {
+      inc.nodes.forEach((node, idx) => {
+        L.circleMarker([node.lat, node.lng], {
+          radius: 4,
+          color: incidentColor,
+          fillColor: '#ffffff',
+          fillOpacity: 1,
+          weight: 2
+        }).addTo(layer)
+          .bindTooltip(`Điểm báo cáo #${idx + 1}${inc.roadName ? ' (' + esc(inc.roadName) + ')' : ''}`, { direction: 'top' });
+      });
+    }
+
+    const midPoint = findMidpointOnPolyline(segmentCoords);
+    const markerLat = midPoint ? midPoint[0] : inc.lat;
+    const markerLng = midPoint ? midPoint[1] : inc.lng;
+
+    const reporterBadgeHtml = (inc.reporterCount && inc.reporterCount >= 2)
+      ? `<div class="incident-badge-count" style="background:${incidentColor};">${inc.reporterCount} người</div>`
+      : '';
+
+    const icon = L.divIcon({
+      className: 'incident-marker-container',
+      html: `
+        <div class="incident-pin-wrapper">
+          ${reporterBadgeHtml}
+          <div class="incident-pin-card" style="border-color:${incidentColor};opacity:${markerOpacity};">
+            <span class="incident-pin-emoji">${meta.emoji}</span>
+          </div>
+          <div class="incident-pin-arrow" style="border-top-color:${incidentColor};"></div>
+        </div>`,
+      iconSize: [36, 42],
+      iconAnchor: [18, 40],
+      popupAnchor: [0, -38]
+    });
+
+    const segmentMarker = L.marker([markerLat, markerLng], { icon }).addTo(layer);
+
+    const segmentPopupContent = `
+      <div class="popup-box">
+        <div class="p-head" style="color:${incidentColor};">${meta.emoji} Đoạn đường ${esc(meta.label)}</div>
+        <div class="confidence-bar"><div class="confidence-fill" style="width:${Math.round(currentC)}%;background:${confColor}"></div></div>
+        <div class="p-row"><span>Tuyến đường</span><b style="color:${incidentColor};font-weight:700;">${esc(inc.roadName || 'Tuyến đường')}</b></div>
+        <div class="p-row"><span>Chiều dài ảnh hưởng</span><b style="color:${incidentColor};font-weight:700;">~${totalLen} mét</b></div>
+        <div class="p-row"><span>Số điểm / người</span><b>${inc.nodes ? inc.nodes.length : 1} điểm (${inc.reporterCount || 1} người báo cáo)</b></div>
+        <div class="p-row"><span>Độ tin cậy</span><b style="color:${confColor}">${Math.round(currentC)}%</b></div>
+        <div class="p-row"><span>Mô tả</span><b>${esc(inc.desc || 'Đang diễn ra trên tuyến đường này')}</b></div>
+        <div class="p-row"><span>Bắt đầu từ</span><b>${startedText}</b></div>
+        <div class="p-row"><span>Cập nhật mới nhất</span><b>${updatedText}</b></div>
+        <span class="p-level" style="background:${levelColor}22;color:${levelColor}">
+          Mức độ: ${levelsMeta[inc.level] || inc.level}
+        </span>
+        <div style="margin-top:10px;padding-top:8px;border-top:1px solid #e5e7eb;display:flex;gap:6px;">
+          <button style="flex:1;background:var(--primary-light);color:var(--primary-dark);border:1px solid var(--primary);border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" data-incident-action="confirm" data-incident-id="${inc.id}">
+            👍 Xác nhận (+30%)
+          </button>
+          <button style="flex:1;background:#fef2f2;color:#ef4444;border:1px solid #fca5a5;border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" data-incident-action="dismiss" data-incident-id="${inc.id}">
+            ❌ Hết sự cố
+          </button>
+        </div>
+      </div>`;
+
+    segmentMarker.bindPopup(segmentPopupContent);
+    roadPolyline.bindPopup(segmentPopupContent);
+
+  } else {
+    // 2. VẼ ĐIỂM SỰ CỐ DẠNG POINT
+    L.circleMarker([inc.lat, inc.lng], {
+      radius: 5,
+      color: incidentColor,
+      fillColor: '#ffffff',
+      fillOpacity: 1,
+      weight: 2.5
+    }).addTo(layer);
+
+    const reporterBadgeHtml = (inc.reporterCount && inc.reporterCount >= 2)
+      ? `<div class="incident-badge-count" style="background:${incidentColor};">${inc.reporterCount} người</div>`
+      : '';
+
+    const icon = L.divIcon({
+      className: 'incident-marker-container',
+      html: `
+        <div class="incident-pin-wrapper">
+          ${reporterBadgeHtml}
+          <div class="incident-pin-card" style="border-color:${incidentColor};opacity:${markerOpacity};">
+            <span class="incident-pin-emoji">${meta.emoji}</span>
+          </div>
+          <div class="incident-pin-arrow" style="border-top-color:${incidentColor};"></div>
+        </div>`,
+      iconSize: [36, 42],
+      iconAnchor: [18, 40],
+      popupAnchor: [0, -38]
+    });
+
+    const pointMarker = L.marker([inc.lat, inc.lng], { icon }).addTo(layer);
+
+    const pointPopupContent = `
+      <div class="popup-box">
+        <div class="p-head" style="color:${incidentColor};">${meta.emoji} ${esc(meta.label)}</div>
+        <div class="confidence-bar"><div class="confidence-fill" style="width:${Math.round(currentC)}%;background:${confColor}"></div></div>
+        <div class="p-row"><span>Vị trí</span><b style="color:${incidentColor};font-weight:700;">${esc(inc.roadName || 'Điểm sự cố')}</b></div>
+        <div class="p-row"><span>Độ tin cậy</span><b style="color:${confColor}">${Math.round(currentC)}%</b></div>
+        <div class="p-row"><span>Người báo cáo</span><b>${inc.reporterCount || 1} người</b></div>
+        <div class="p-row"><span>Mô tả</span><b>${esc(inc.desc || 'Không có mô tả chi tiết')}</b></div>
+        <div class="p-row"><span>Bắt đầu từ</span><b>${startedText}</b></div>
+        <div class="p-row"><span>Cập nhật mới nhất</span><b>${updatedText}</b></div>
+        <span class="p-level" style="background:${levelColor}22;color:${levelColor}">
+          Mức độ: ${levelsMeta[inc.level] || inc.level}
+        </span>
+        <div style="margin-top:10px;padding-top:8px;border-top:1px solid #e5e7eb;display:flex;gap:6px;">
+          <button style="flex:1;background:var(--primary-light);color:var(--primary-dark);border:1px solid var(--primary);border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" data-incident-action="confirm" data-incident-id="${inc.id}">
+            👍 Xác nhận (+30%)
+          </button>
+          <button style="flex:1;background:#fef2f2;color:#ef4444;border:1px solid #fca5a5;border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" data-incident-action="dismiss" data-incident-id="${inc.id}">
+            ❌ Hết sự cố
+          </button>
+        </div>
+      </div>`;
+
+    pointMarker.bindPopup(pointPopupContent);
+  }
+
+  return layer;
+}
+
+// Bảng theo dõi các layer sự cố phục vụ incremental update (incidentId -> { layer, c, nodeCount, roadCoordsLen })
+const _incidentLayers = new Map();
+
+/**
+ * Cập nhật tăng dần (Incremental Update) các điểm/đoạn sự cố giao thông trên bản đồ:
+ * - Tránh clearLayers() toàn bộ gây giật lag giao diện.
+ * - Chỉ cập nhật hoặc dựng lại các incident có thay đổi thực sự (confidence chênh >= 5% hoặc cấu trúc thay đổi).
+ * - Tự động loại bỏ các layer của sự cố đã kết thúc/hết hạn.
  */
 function renderIncidents() {
   if (!incidentLayerGroup) return;
-  incidentLayerGroup.clearLayers();
 
   const now = Date.now();
   const incList = (typeof window !== 'undefined' && window.incidents) ? window.incidents : [];
   const confFn = (typeof window !== 'undefined' && window.calculateCurrentConfidence) ? window.calculateCurrentConfidence : () => 50;
-  const colorFn = (typeof window !== 'undefined' && window.getConfidenceColor) ? window.getConfidenceColor : () => 'var(--risk-mid)';
-  const typesMeta = (typeof window !== 'undefined' && window.INCIDENT_TYPES) ? window.INCIDENT_TYPES : _INCIDENT_TYPES;
-  const levelsMeta = (typeof window !== 'undefined' && window.LEVEL_LABEL) ? window.LEVEL_LABEL : _LEVEL_LABEL;
-  const esc = (typeof window !== 'undefined' && window.escapeHtml) ? window.escapeHtml : _escapeHtml;
-  const fmtDate = (typeof window !== 'undefined' && window.formatDateTime) ? window.formatDateTime : () => '';
-  const fmtRel = (typeof window !== 'undefined' && window.formatRelativeTime) ? window.formatRelativeTime : () => '';
 
-  for (const inc of incList) {
+  const currentIds = new Set();
+
+  for (let i = 0; i < incList.length; i++) {
+    const inc = incList[i];
     const currentC = confFn(inc, now);
     if (currentC <= 0.1) continue;
 
-    const meta = typesMeta[inc.type] || { emoji: '⚠️', label: 'Sự cố', color: '#e3492c', renderMode: 'point' };
-    const markerOpacity = Math.min(1.0, Math.max(0.85, 0.75 + (currentC / 100) * 0.25));
-    const confColor = colorFn(currentC);
+    currentIds.add(inc.id);
+    const nodeCount = inc.nodes ? inc.nodes.length : 1;
+    const roadCoordsLen = (inc.roadCoords && inc.roadCoords.length) || (inc.segmentCoords && inc.segmentCoords.length) || 0;
+    const existing = _incidentLayers.get(inc.id);
 
-    const isHighSeverity = (inc.level === 'cao');
-    const levelColor = isHighSeverity ? 'var(--risk-high)' : (inc.level === 'trungbinh' ? 'var(--risk-mid)' : 'var(--risk-low)');
+    // Incremental: Nếu layer đã tồn tại và confidence chênh < 5 và cấu trúc node/roadCoords không đổi -> giữ nguyên
+    if (existing && Math.abs(existing.c - currentC) < 5 && existing.nodeCount === nodeCount && existing.roadCoordsLen === roadCoordsLen) {
+      continue;
+    }
 
-    // Màu chủ đạo theo loại sự cố (ngập: xanh #2563eb, ùn tắc: cam vàng #f59e0b, công trình: cam #f97316...)
-    const incidentColor = meta.color || (isHighSeverity ? '#ef4444' : '#f59e0b');
+    if (existing && existing.layer) {
+      incidentLayerGroup.removeLayer(existing.layer);
+    }
 
-    // Xác định renderMode: 'segment' hoặc 'point' từ cấu hình tập trung
-    const renderMode = inc.renderMode 
-      || (typeof window !== 'undefined' && window.INCIDENT_RENDER_MODE && window.INCIDENT_RENDER_MODE[inc.type])
-      || meta.renderMode 
-      || 'point';
+    const newLayer = _buildIncidentLayer(inc, currentC, now);
+    incidentLayerGroup.addLayer(newLayer);
+    _incidentLayers.set(inc.id, { layer: newLayer, c: currentC, nodeCount, roadCoordsLen });
+  }
 
-    const segmentCoords = (inc.roadCoords && inc.roadCoords.length >= 2) 
-      ? inc.roadCoords 
-      : ((inc.segmentCoords && inc.segmentCoords.length >= 2) ? inc.segmentCoords : null);
-
-    // CHỈ hiển thị dạng đoạn đường nếu renderMode là segment VÀ đã có tọa độ hình học thực tế
-    const isSegmentMode = (renderMode === 'segment') && Boolean(segmentCoords && segmentCoords.length >= 2);
-
-    const startedTs = inc.startedAt || inc.createdAt;
-    const confirmedTs = inc.lastConfirmedAt || inc.createdAt;
-    const startedText = startedTs ? `${fmtDate(startedTs)} (${fmtRel(startedTs)})` : '';
-    const updatedText = confirmedTs ? `${fmtDate(confirmedTs)} (${fmtRel(confirmedTs)})` : '';
-    const totalLen = Math.round(inc.segmentLengthMeters || inc.farthestDistance || 0);
-
-    let roadPolyline = null;
-
-    if (isSegmentMode && segmentCoords) {
-      // 1. VẼ ĐOẠN ĐƯỜNG POLYLINE CHO SỰ CỐ DẠNG SEGMENT (Ngập nước, Ùn tắc, Công trình...)
-      // Lớp phát quang viền rộng bên dưới (Halo Glow)
-      L.polyline(segmentCoords, {
-        color: incidentColor,
-        weight: 14,
-        opacity: 0.35,
-        lineCap: 'round',
-        lineJoin: 'round'
-      }).addTo(incidentLayerGroup);
-
-      // Lớp vạch kẻ chính bám sát tim đường
-      roadPolyline = L.polyline(segmentCoords, {
-        color: incidentColor,
-        weight: 7,
-        opacity: 0.95,
-        lineCap: 'round',
-        lineJoin: 'round'
-      }).addTo(incidentLayerGroup);
-
-      roadPolyline.bindTooltip(
-        `<div style="font-weight:700;font-size:12px;color:${incidentColor};">
-          ${meta.emoji} Đoạn đường ${esc(meta.label)}${inc.roadName ? ' (' + esc(inc.roadName) + ')' : ''}
-        </div>
-        <div style="font-size:11px;color:#333;">
-          Chiều dài: ~${totalLen}m · ${inc.reporterCount || 2} người báo cáo
-        </div>`,
-        { sticky: true }
-      );
-
-      // Vẽ các chấm điểm tròn tinh gọn tại các node vị trí đã báo cáo
-      if (inc.nodes && inc.nodes.length > 1) {
-        inc.nodes.forEach((node, idx) => {
-          L.circleMarker([node.lat, node.lng], {
-            radius: 4,
-            color: incidentColor,
-            fillColor: '#ffffff',
-            fillOpacity: 1,
-            weight: 2
-          }).addTo(incidentLayerGroup)
-            .bindTooltip(`Điểm báo cáo #${idx + 1}${inc.roadName ? ' (' + esc(inc.roadName) + ')' : ''}`, { direction: 'top' });
-        });
+  // Dọn dẹp các layer của sự cố không còn tồn tại
+  for (const [id, entry] of _incidentLayers.entries()) {
+    if (!currentIds.has(id)) {
+      if (entry && entry.layer) {
+        incidentLayerGroup.removeLayer(entry.layer);
       }
-
-      // Đặt 1 marker đại diện DUY NHẤT tại điểm chính giữa polyline
-      const midPoint = findMidpointOnPolyline(segmentCoords);
-      const markerLat = midPoint ? midPoint[0] : inc.lat;
-      const markerLng = midPoint ? midPoint[1] : inc.lng;
-
-      const reporterBadgeHtml = (inc.reporterCount && inc.reporterCount >= 2)
-        ? `<div class="incident-badge-count" style="background:${incidentColor};">${inc.reporterCount} người</div>`
-        : '';
-
-      const icon = L.divIcon({
-        className: 'incident-marker-container',
-        html: `
-          <div class="incident-pin-wrapper">
-            ${reporterBadgeHtml}
-            <div class="incident-pin-card" style="border-color:${incidentColor};opacity:${markerOpacity};">
-              <span class="incident-pin-emoji">${meta.emoji}</span>
-            </div>
-            <div class="incident-pin-arrow" style="border-top-color:${incidentColor};"></div>
-          </div>`,
-        iconSize: [36, 42],
-        iconAnchor: [18, 40],
-        popupAnchor: [0, -38]
-      });
-
-      const segmentMarker = L.marker([markerLat, markerLng], { icon }).addTo(incidentLayerGroup);
-
-      const segmentPopupContent = `
-        <div class="popup-box">
-          <div class="p-head" style="color:${incidentColor};">${meta.emoji} Đoạn đường ${esc(meta.label)}</div>
-          <div class="confidence-bar"><div class="confidence-fill" style="width:${Math.round(currentC)}%;background:${confColor}"></div></div>
-          <div class="p-row"><span>Tuyến đường</span><b style="color:${incidentColor};font-weight:700;">${esc(inc.roadName || 'Tuyến đường')}</b></div>
-          <div class="p-row"><span>Chiều dài ảnh hưởng</span><b style="color:${incidentColor};font-weight:700;">~${totalLen} mét</b></div>
-          <div class="p-row"><span>Số điểm / người</span><b>${inc.nodes ? inc.nodes.length : 1} điểm (${inc.reporterCount || 1} người báo cáo)</b></div>
-          <div class="p-row"><span>Độ tin cậy</span><b style="color:${confColor}">${Math.round(currentC)}%</b></div>
-          <div class="p-row"><span>Mô tả</span><b>${esc(inc.desc || 'Đang diễn ra trên tuyến đường này')}</b></div>
-          <div class="p-row"><span>Bắt đầu từ</span><b>${startedText}</b></div>
-          <div class="p-row"><span>Cập nhật mới nhất</span><b>${updatedText}</b></div>
-          <span class="p-level" style="background:${levelColor}22;color:${levelColor}">
-            Mức độ: ${levelsMeta[inc.level] || inc.level}
-          </span>
-          <div style="margin-top:10px;padding-top:8px;border-top:1px solid #e5e7eb;display:flex;gap:6px;">
-            <button style="flex:1;background:var(--primary-light);color:var(--primary-dark);border:1px solid var(--primary);border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" onclick="voteConfirmIncident('${inc.id}')">
-              👍 Xác nhận (+30%)
-            </button>
-            <button style="flex:1;background:#fef2f2;color:#ef4444;border:1px solid #fca5a5;border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" onclick="dismissIncident('${inc.id}')">
-              ❌ Hết sự cố
-            </button>
-          </div>
-        </div>`;
-
-      segmentMarker.bindPopup(segmentPopupContent);
-      roadPolyline.bindPopup(segmentPopupContent);
-
-    } else {
-      // 2. VẼ ĐIỂM SỰ CỐ DẠNG POINT (Tai nạn, Điểm nguy hiểm, Chướng ngại vật...) hoặc sự cố chưa có geometry
-      L.circleMarker([inc.lat, inc.lng], {
-        radius: 5,
-        color: incidentColor,
-        fillColor: '#ffffff',
-        fillOpacity: 1,
-        weight: 2.5
-      }).addTo(incidentLayerGroup);
-
-      const reporterBadgeHtml = (inc.reporterCount && inc.reporterCount >= 2)
-        ? `<div class="incident-badge-count" style="background:${incidentColor};">${inc.reporterCount} người</div>`
-        : '';
-
-      const icon = L.divIcon({
-        className: 'incident-marker-container',
-        html: `
-          <div class="incident-pin-wrapper">
-            ${reporterBadgeHtml}
-            <div class="incident-pin-card" style="border-color:${incidentColor};opacity:${markerOpacity};">
-              <span class="incident-pin-emoji">${meta.emoji}</span>
-            </div>
-            <div class="incident-pin-arrow" style="border-top-color:${incidentColor};"></div>
-          </div>`,
-        iconSize: [36, 42],
-        iconAnchor: [18, 40],
-        popupAnchor: [0, -38]
-      });
-
-      const pointMarker = L.marker([inc.lat, inc.lng], { icon }).addTo(incidentLayerGroup);
-
-      const pointPopupContent = `
-        <div class="popup-box">
-          <div class="p-head" style="color:${incidentColor};">${meta.emoji} ${esc(meta.label)}</div>
-          <div class="confidence-bar"><div class="confidence-fill" style="width:${Math.round(currentC)}%;background:${confColor}"></div></div>
-          <div class="p-row"><span>Vị trí</span><b style="color:${incidentColor};font-weight:700;">${esc(inc.roadName || 'Điểm sự cố')}</b></div>
-          <div class="p-row"><span>Độ tin cậy</span><b style="color:${confColor}">${Math.round(currentC)}%</b></div>
-          <div class="p-row"><span>Người báo cáo</span><b>${inc.reporterCount || 1} người</b></div>
-          <div class="p-row"><span>Mô tả</span><b>${esc(inc.desc || 'Không có mô tả chi tiết')}</b></div>
-          <div class="p-row"><span>Bắt đầu từ</span><b>${startedText}</b></div>
-          <div class="p-row"><span>Cập nhật mới nhất</span><b>${updatedText}</b></div>
-          <span class="p-level" style="background:${levelColor}22;color:${levelColor}">
-            Mức độ: ${levelsMeta[inc.level] || inc.level}
-          </span>
-          <div style="margin-top:10px;padding-top:8px;border-top:1px solid #e5e7eb;display:flex;gap:6px;">
-            <button style="flex:1;background:var(--primary-light);color:var(--primary-dark);border:1px solid var(--primary);border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" onclick="voteConfirmIncident('${inc.id}')">
-              👍 Xác nhận (+30%)
-            </button>
-            <button style="flex:1;background:#fef2f2;color:#ef4444;border:1px solid #fca5a5;border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" onclick="dismissIncident('${inc.id}')">
-              ❌ Hết sự cố
-            </button>
-          </div>
-        </div>`;
-
-      pointMarker.bindPopup(pointPopupContent);
+      _incidentLayers.delete(id);
     }
   }
+}
+
+// Event Delegation xử lý tương tác xác nhận / hết sự cố trong popup mà không dùng inline onclick
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', e => {
+    const btn = e.target.closest('[data-incident-action]');
+    if (!btn) return;
+    const action = btn.dataset.incidentAction;
+    const id = btn.dataset.incidentId;
+    if (action === 'confirm') {
+      if (typeof window.voteConfirmIncident === 'function') window.voteConfirmIncident(id);
+    } else if (action === 'dismiss') {
+      if (typeof window.dismissIncident === 'function') window.dismissIncident(id);
+    }
+  });
 }
 
 /**
@@ -660,4 +753,22 @@ if (typeof window !== 'undefined') {
   window.handleGpsClick = handleGpsClick;
   window.renderIncidents = renderIncidents;
   window.renderNearbyPanel = renderNearbyPanel;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    _incidentLayers,
+    _buildIncidentLayer,
+    _getStartIcon,
+    _getEndIcon,
+    updateStartMarker,
+    updateEndMarker,
+    reverseGeocodeStartLabel,
+    reverseGeocodeEndLabel,
+    renderIncidents,
+    renderNearbyPanel,
+    setStartLocation,
+    setEndLocation,
+    switchMapStyle
+  };
 }

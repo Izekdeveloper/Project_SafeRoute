@@ -96,11 +96,16 @@
   let currentRoutes = [];
   let selectedRouteId = null;
   let transportFallback = null;
+  let _rerouteTimer = null;
 
   /**
    * Xử lý khi người dùng nhấn nút "Tìm đường an toàn"
    */
   async function onFindRouteClick() {
+    if (_rerouteTimer) {
+      clearTimeout(_rerouteTimer);
+      _rerouteTimer = null;
+    }
     if (isFindingRoute) return;
 
     const currentStart = (typeof window !== 'undefined') ? window.startLocation : null;
@@ -303,12 +308,16 @@
       });
     }
 
-    // Tự động tính toán lại tuyến đường khi có sự cố mới hoặc độ tin cậy thay đổi
+    // Tự động tính toán lại tuyến đường khi có sự cố mới hoặc độ tin cậy thay đổi (debounced 800ms)
     window.addEventListener('incidents-changed', () => {
       const curStart = window.startLocation;
       const curEnd = window.endLocation;
       if (currentRoutes.length > 0 && curStart && curEnd) {
-        onFindRouteClick();
+        if (_rerouteTimer) clearTimeout(_rerouteTimer);
+        _rerouteTimer = setTimeout(() => {
+          _rerouteTimer = null;
+          onFindRouteClick();
+        }, 800);
       }
     });
 

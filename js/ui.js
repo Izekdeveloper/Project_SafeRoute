@@ -12,10 +12,21 @@
  */
 
 // Helper functions — dùng function declaration với tên riêng (_ui_ prefix)
-// để tránh xung đột với config.js (cùng global scope, const/function không được khai báo lại)
-function _ui_escapeHtml(s) { return (window.escapeHtml || ((x) => x))(s); }
-function _ui_shortenDisplayName(s) { return (window.shortenDisplayName || ((x) => x))(s); }
-function _ui_isValidCoordinate(lat, lng) { return (window.isValidCoordinate || (() => true))(lat, lng); }
+function _ui_escapeHtml(s) {
+  if (typeof window !== 'undefined' && window.escapeHtml) return window.escapeHtml(s);
+  if (typeof escapeHtml === 'function') return escapeHtml(s);
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+function _ui_shortenDisplayName(s) {
+  if (typeof window !== 'undefined' && window.shortenDisplayName) return window.shortenDisplayName(s);
+  if (typeof shortenDisplayName === 'function') return shortenDisplayName(s);
+  return String(s || '');
+}
+function _ui_isValidCoordinate(lat, lng) {
+  if (typeof window !== 'undefined' && window.isValidCoordinate) return window.isValidCoordinate(lat, lng);
+  if (typeof isValidCoordinate === 'function') return isValidCoordinate(lat, lng);
+  return Number.isFinite(+lat) && Number.isFinite(+lng) && +lat >= -90 && +lat <= 90 && +lng >= -180 && +lng <= 180;
+}
 
 function _addOrConfirmIncident(data) {
   if (typeof window !== 'undefined' && typeof window.addOrConfirmIncident === 'function') {
@@ -185,12 +196,21 @@ function openReportModal() {
 
 function closeReportModal() {
   const modal = document.getElementById('report-modal');
-  if (modal) modal.classList.add('hidden');
-  hideReportSuggestions();
+  if (!modal) return;
+  modal.classList.add('hidden');
 
-  // Reset form để lần báo cáo sau bắt đầu sạch
-  const desc = document.getElementById('report-desc');
-  if (desc) desc.value = '';
+  const form = modal.querySelector('form');
+  if (form) {
+    form.reset();
+  } else {
+    // Fallback: reset từng field nếu không có thẻ form
+    const desc = document.getElementById('report-desc');
+    if (desc) desc.value = '';
+    const locInput = document.getElementById('report-location');
+    if (locInput) locInput.value = '';
+  }
+
+  hideReportSuggestions();
   reportSelectedLatLng = null;
   if (reportMarker && reportMap) {
     reportMap.removeLayer(reportMarker);
@@ -353,17 +373,26 @@ function renderReportSuggestions(results) {
     return;
   }
 
-  box.innerHTML = results.map(r => {
+  box.innerHTML = results.map((r, i) => {
     const s = _ui_shortenDisplayName(r.display_name);
     const m = s.split(',')[0], sub = s.split(',').slice(1).join(',').trim();
-    const safeDisplay = _ui_escapeHtml(r.display_name).replace(/'/g, '&#39;');
-    return `<li class="suggestion-item" role="option" onclick="selectReportSuggestion(${+r.lat}, ${+r.lon}, '${safeDisplay}')">
+    return `<li class="suggestion-item" role="option" data-index="${i}">
       <i class="fa-solid fa-location-dot"></i>
       <div><div class="s-main">${_ui_escapeHtml(m)}</div>${sub ? `<div class="s-sub">${_ui_escapeHtml(sub)}</div>` : ''}</div>
     </li>`;
   }).join('');
   box.classList.remove('hidden');
   document.getElementById('report-location')?.setAttribute('aria-expanded', 'true');
+
+  box.querySelectorAll('.suggestion-item[data-index]').forEach(el => {
+    el.addEventListener('click', () => {
+      const idx = +el.dataset.index;
+      const r = results[idx];
+      if (r) {
+        selectReportSuggestion(+r.lat, +r.lon, r.display_name);
+      }
+    });
+  });
 }
 
 function selectReportSuggestion(lat, lon, rawDisplayName) {
@@ -495,4 +524,25 @@ if (typeof window !== 'undefined') {
   window.selectReportSuggestion = selectReportSuggestion;
   window.submitReport = submitReport;
   window.initReportModalControls = initReportModalControls;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    showToast,
+    toggleSheet,
+    openSheet,
+    closeSheet,
+    openReportModal,
+    closeReportModal,
+    initReportMap,
+    selectReportLocation,
+    updateReportLocationText,
+    useCurrentLocationForReport,
+    hideReportSuggestions,
+    searchReportLocation,
+    renderReportSuggestions,
+    selectReportSuggestion,
+    submitReport,
+    initReportModalControls
+  };
 }
