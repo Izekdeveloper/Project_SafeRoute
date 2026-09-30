@@ -10,7 +10,11 @@
  * ============================================================================
  */
 
-const _escapeHtml = (typeof window !== 'undefined' && window.escapeHtml) ? window.escapeHtml : (str => str);
+const _escapeHtml = (str) => {
+  if (typeof window !== 'undefined' && window.escapeHtml) return window.escapeHtml(str);
+  if (typeof escapeHtml === 'function') return escapeHtml(str);
+  return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+};
 const _shortenDisplayName = (typeof window !== 'undefined' && window.shortenDisplayName) ? window.shortenDisplayName : (str => str);
 const _isValidCoordinate = (typeof window !== 'undefined' && window.isValidCoordinate) ? window.isValidCoordinate : ((lat, lng) => true);
 const _haversineMeters = (typeof window !== 'undefined' && window.haversineMeters) ? window.haversineMeters : ((lat1, lng1, lat2, lng2) => 0);
@@ -539,10 +543,10 @@ function _buildIncidentLayer(inc, currentC, now) {
           Mức độ: ${levelsMeta[inc.level] || inc.level}
         </span>
         <div style="margin-top:10px;padding-top:8px;border-top:1px solid #e5e7eb;display:flex;gap:6px;">
-          <button style="flex:1;background:var(--primary-light);color:var(--primary-dark);border:1px solid var(--primary);border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" data-incident-action="confirm" data-incident-id="${inc.id}">
+          <button style="flex:1;background:var(--primary-light);color:var(--primary-dark);border:1px solid var(--primary);border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" data-incident-action="confirm" data-incident-id="${esc(inc.id)}">
             👍 Xác nhận (+30%)
           </button>
-          <button style="flex:1;background:#fef2f2;color:#ef4444;border:1px solid #fca5a5;border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" data-incident-action="dismiss" data-incident-id="${inc.id}">
+          <button style="flex:1;background:#fef2f2;color:#ef4444;border:1px solid #fca5a5;border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" data-incident-action="dismiss" data-incident-id="${esc(inc.id)}">
             ❌ Hết sự cố
           </button>
         </div>
@@ -550,6 +554,14 @@ function _buildIncidentLayer(inc, currentC, now) {
 
     segmentMarker.bindPopup(segmentPopupContent);
     roadPolyline.bindPopup(segmentPopupContent);
+    if (typeof segmentMarker.on === 'function') {
+      segmentMarker.on('popupopen', () => { _popupOpenIncidentId = inc.id; });
+      segmentMarker.on('popupclose', () => { if (_popupOpenIncidentId === inc.id) _popupOpenIncidentId = null; });
+    }
+    if (typeof roadPolyline.on === 'function') {
+      roadPolyline.on('popupopen', () => { _popupOpenIncidentId = inc.id; });
+      roadPolyline.on('popupclose', () => { if (_popupOpenIncidentId === inc.id) _popupOpenIncidentId = null; });
+    }
 
   } else {
     // 2. VẼ ĐIỂM SỰ CỐ DẠNG POINT
@@ -596,20 +608,27 @@ function _buildIncidentLayer(inc, currentC, now) {
           Mức độ: ${levelsMeta[inc.level] || inc.level}
         </span>
         <div style="margin-top:10px;padding-top:8px;border-top:1px solid #e5e7eb;display:flex;gap:6px;">
-          <button style="flex:1;background:var(--primary-light);color:var(--primary-dark);border:1px solid var(--primary);border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" data-incident-action="confirm" data-incident-id="${inc.id}">
+          <button style="flex:1;background:var(--primary-light);color:var(--primary-dark);border:1px solid var(--primary);border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" data-incident-action="confirm" data-incident-id="${esc(inc.id)}">
             👍 Xác nhận (+30%)
           </button>
-          <button style="flex:1;background:#fef2f2;color:#ef4444;border:1px solid #fca5a5;border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" data-incident-action="dismiss" data-incident-id="${inc.id}">
+          <button style="flex:1;background:#fef2f2;color:#ef4444;border:1px solid #fca5a5;border-radius:6px;padding:5px 4px;font-size:11px;font-weight:700;cursor:pointer;" data-incident-action="dismiss" data-incident-id="${esc(inc.id)}">
             ❌ Hết sự cố
           </button>
         </div>
       </div>`;
 
     pointMarker.bindPopup(pointPopupContent);
+    if (typeof pointMarker.on === 'function') {
+      pointMarker.on('popupopen', () => { _popupOpenIncidentId = inc.id; });
+      pointMarker.on('popupclose', () => { if (_popupOpenIncidentId === inc.id) _popupOpenIncidentId = null; });
+    }
   }
 
   return layer;
 }
+
+// Biến theo dõi ID của sự cố đang mở popup để không tự ý đóng khi cập nhật confidence
+let _popupOpenIncidentId = null;
 
 // Bảng theo dõi các layer sự cố phục vụ incremental update (incidentId -> { layer, c, nodeCount, roadCoordsLen })
 const _incidentLayers = new Map();
@@ -639,8 +658,25 @@ function renderIncidents() {
     const roadCoordsLen = (inc.roadCoords && inc.roadCoords.length) || (inc.segmentCoords && inc.segmentCoords.length) || 0;
     const existing = _incidentLayers.get(inc.id);
 
-    // Incremental: Nếu layer đã tồn tại và confidence chênh < 5 và cấu trúc node/roadCoords không đổi -> giữ nguyên
-    if (existing && Math.abs(existing.c - currentC) < 5 && existing.nodeCount === nodeCount && existing.roadCoordsLen === roadCoordsLen) {
+    const structuralChanged = Boolean(
+      existing && (
+        existing.nodeCount !== nodeCount ||
+        existing.roadCoordsLen !== roadCoordsLen
+      )
+    );
+
+    // P3.4: Nếu popup đang mở và chỉ confidence thay đổi (structural không đổi) -> skip rebuild để popup không bị đóng
+    if (existing && !structuralChanged && _popupOpenIncidentId === inc.id) {
+      existing.c = currentC;
+      continue;
+    }
+
+    // P2.3: Ngưỡng 2% cân bằng giữa độ chính xác popup và số lần rebuild
+    // (decay half-life >= 0.5 giờ -> mỗi 5 phút giảm ~5-10% ở type ngắn nhất)
+    const CONFIDENCE_REBUILD_THRESHOLD = 2;
+    if (existing
+        && Math.abs(existing.c - currentC) < CONFIDENCE_REBUILD_THRESHOLD
+        && !structuralChanged) {
       continue;
     }
 
@@ -753,6 +789,7 @@ if (typeof window !== 'undefined') {
   window.handleGpsClick = handleGpsClick;
   window.renderIncidents = renderIncidents;
   window.renderNearbyPanel = renderNearbyPanel;
+  window._popupOpenIncidentId = _popupOpenIncidentId;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -769,6 +806,8 @@ if (typeof module !== 'undefined' && module.exports) {
     renderNearbyPanel,
     setStartLocation,
     setEndLocation,
-    switchMapStyle
+    switchMapStyle,
+    getPopupOpenIncidentId: () => _popupOpenIncidentId,
+    setPopupOpenIncidentId: (id) => { _popupOpenIncidentId = id; }
   };
 }

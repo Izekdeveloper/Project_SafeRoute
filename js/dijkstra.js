@@ -280,7 +280,24 @@
 
   const _graphDijkstraCaches = new WeakMap();
   const _costFunctionCache = new Map();
+  const _COST_FN_CACHE_MAX = 50;
   let _globalCacheVersion = 1;
+
+  function _setCostFunctionCacheLRU(key, fn) {
+    if (_costFunctionCache.size >= _COST_FN_CACHE_MAX && !_costFunctionCache.has(key)) {
+      const oldestKey = _costFunctionCache.keys().next().value;
+      if (oldestKey !== undefined) _costFunctionCache.delete(oldestKey);
+    }
+    _costFunctionCache.set(key, fn);
+  }
+
+  function _getCostFunctionCacheLRU(key) {
+    if (!_costFunctionCache.has(key)) return null;
+    const cached = _costFunctionCache.get(key);
+    _costFunctionCache.delete(key);
+    _costFunctionCache.set(key, cached);
+    return cached;
+  }
 
   function getGraphCache(graph) {
     if (!graph || typeof graph !== 'object') return null;
@@ -503,8 +520,9 @@
 
     // Cache key kiểm tra tái sử dụng cost function theo bucket thời gian
     const cacheKey = `${metric}#${mode}#${cfgVersion}#${incVersion}#${bucket}`;
-    if (options.noCache !== true && _costFunctionCache.has(cacheKey)) {
-      return _costFunctionCache.get(cacheKey);
+    if (options.noCache !== true) {
+      const cached = _getCostFunctionCacheLRU(cacheKey);
+      if (cached) return cached;
     }
 
     const globalCfg = (typeof window !== 'undefined' && window.CONFIG)
@@ -615,7 +633,7 @@
     };
 
     if (options.noCache !== true) {
-      _costFunctionCache.set(cacheKey, costFunction);
+      _setCostFunctionCacheLRU(cacheKey, costFunction);
     }
 
     return costFunction;
@@ -1741,7 +1759,8 @@
   const DijkstraCache = {
     clear: clearAllDijkstraCaches,
     getGraphCache: getGraphCache,
-    LRU: DijkstraLRUCache
+    LRU: DijkstraLRUCache,
+    _costFunctionCache: _costFunctionCache
   };
 
   const DijkstraEngine = {
@@ -1755,7 +1774,8 @@
     getGraphOutgoingEdges,
     getGraphIncomingEdges,
     getEdgeIdentifier,
-    calculateRouteOverlap
+    calculateRouteOverlap,
+    _costFunctionCache
   };
 
   if (typeof window !== 'undefined') {

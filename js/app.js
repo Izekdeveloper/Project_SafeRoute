@@ -230,6 +230,10 @@
    * Đảo vị trí giữa điểm bắt đầu và điểm đến
    */
   function swapLocations() {
+    if (_rerouteTimer) {
+      clearTimeout(_rerouteTimer);
+      _rerouteTimer = null;
+    }
     if (typeof window !== 'undefined') {
       if (window.transportFallbackLayerGroup) window.transportFallbackLayerGroup.clearLayers();
       if (window.routeLayerGroup) window.routeLayerGroup.clearLayers();

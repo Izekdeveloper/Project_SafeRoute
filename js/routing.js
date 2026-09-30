@@ -117,6 +117,25 @@ function _isDebugRouting() {
 }
 
 /**
+ * Đóng băng có chọn lọc waypoints và legs (không đóng băng coords và steps để tránh tốn CPU)
+ */
+function _freezeRouteNestedArrays(route) {
+  if (!route || typeof route !== 'object') return;
+  if (Array.isArray(route.waypoints) && !Object.isFrozen(route.waypoints)) {
+    for (const wp of route.waypoints) {
+      if (wp && typeof wp === 'object' && !Object.isFrozen(wp)) Object.freeze(wp);
+    }
+    Object.freeze(route.waypoints);
+  }
+  if (Array.isArray(route.legs) && !Object.isFrozen(route.legs)) {
+    for (const leg of route.legs) {
+      if (leg && typeof leg === 'object' && !Object.isFrozen(leg)) Object.freeze(leg);
+    }
+    Object.freeze(route.legs);
+  }
+}
+
+/**
  * Lớp quản lý bộ nhớ đệm lộ trình OSRM (LRU + TTL Cache)
  * Tách biệt hoàn toàn tầng hình học OSRM với tầng tính điểm rủi ro sự cố
  */
@@ -177,13 +196,15 @@ class RouteCache {
     if (Array.isArray(data)) {
       for (let i = 0; i < data.length; i++) {
         const item = data[i];
-        if (item && typeof item === 'object' && !Object.isFrozen(item)) {
-          Object.freeze(item);
+        if (item && typeof item === 'object') {
+          if (!Object.isFrozen(item)) Object.freeze(item);
+          _freezeRouteNestedArrays(item);
         }
       }
       if (!Object.isFrozen(data)) Object.freeze(data);
-    } else if (typeof data === 'object' && !Object.isFrozen(data)) {
-      Object.freeze(data);
+    } else if (typeof data === 'object') {
+      if (!Object.isFrozen(data)) Object.freeze(data);
+      _freezeRouteNestedArrays(data);
     }
 
     this.cache.set(key, {
@@ -382,8 +403,9 @@ async function fetchOsrmRoute(waypoints, options = {}, externalSignal = null, me
       if (routes && Array.isArray(routes)) {
         for (let i = 0; i < routes.length; i++) {
           const r = routes[i];
-          if (r && typeof r === 'object' && !Object.isFrozen(r)) {
-            Object.freeze(r);
+          if (r && typeof r === 'object') {
+            if (!Object.isFrozen(r)) Object.freeze(r);
+            _freezeRouteNestedArrays(r);
           }
         }
         resolve(routes);
@@ -593,7 +615,7 @@ async function findSafeRoutes(start, end, options = {}) {
         if (_isDebugRouting()) console.log('[OSRM] final route: Tải turn-by-turn navigation steps cho tuyến đề xuất...');
         const detailed = await fetchOsrmRoute(topRoute.waypoints, { overview: 'full', steps: true, alternatives: false }, sessionSignal, metrics);
         if (detailed && detailed.length > 0 && detailed[0].legs) {
-          topRoute.legs = detailed[0].legs;
+          topRoute.legs = Array.isArray(detailed[0].legs) ? [...detailed[0].legs] : [];
         }
       } catch (_) {}
     }
@@ -1329,7 +1351,7 @@ function analyzeRouteIncidents(route, incidentSnapshot = null) {
     riskScore,
     rawRisk: raw,
     items,
-    _snapshotVersion: _incidentSnapshotVersion
+    _snapshotVersion: snapshot._snapshotVersion
   };
 
   if (!isCustomSnapshot) {
@@ -1581,15 +1603,18 @@ function _clusterIncidents(activeIncidents) {
  */
 function _fastSampleMatch(ca, cb, samples = 30, tol = 0.0005) {
   if (!ca || !cb || ca.length < 2 || cb.length < 2) return false;
-  const stepA = (ca.length - 1) / (samples - 1);
-  const stepB = (cb.length - 1) / (samples - 1);
+  const effectiveSamples = Math.min(samples, ca.length, cb.length);
+  if (effectiveSamples < 2) return false;
+
+  const stepA = (ca.length - 1) / (effectiveSamples - 1);
+  const stepB = (cb.length - 1) / (effectiveSamples - 1);
   let matched = 0;
-  for (let i = 0; i < samples; i++) {
+  for (let i = 0; i < effectiveSamples; i++) {
     const pa = ca[Math.round(i * stepA)];
     const pb = cb[Math.round(i * stepB)];
     if (Math.abs(pa[0] - pb[0]) < tol && Math.abs(pa[1] - pb[1]) < tol) matched++;
   }
-  return (matched / samples) >= 0.85;
+  return (matched / effectiveSamples) >= 0.85;
 }
 
 function _areRoutesDuplicate(r1, r2) {
@@ -2289,7 +2314,7 @@ function chooseRoute(id) {
       fetchOsrmRoute(target.waypoints, { overview: 'full', steps: true, alternatives: false })
         .then(stepRoutes => {
           if (stepRoutes && stepRoutes.length > 0 && stepRoutes[0].legs) {
-            target.legs = stepRoutes[0].legs;
+            target.legs = Array.isArray(stepRoutes[0].legs) ? [...stepRoutes[0].legs] : [];
             if (window.selectedRouteId === id) {
               renderRoutes(currentRoutes, window.selectedMode || 'balanced');
             }
@@ -2383,6 +2408,7 @@ if (typeof module !== 'undefined' && module.exports) {
     _getRouteSamplePoints,
     _areRoutesDuplicate,
     _fastSampleMatch,
+    _freezeRouteNestedArrays,
     _deduplicateRoutes,
     _clusterIncidents,
     createActiveIncidentSnapshot,

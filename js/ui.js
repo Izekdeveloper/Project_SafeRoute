@@ -203,21 +203,21 @@ function closeReportModal() {
   if (form) {
     form.reset();
   } else {
-    // Fallback: reset từng field nếu không có thẻ form
     const desc = document.getElementById('report-desc');
     if (desc) desc.value = '';
-    const locInput = document.getElementById('report-location');
-    if (locInput) locInput.value = '';
   }
 
   hideReportSuggestions();
   reportSelectedLatLng = null;
+
   if (reportMarker && reportMap) {
     reportMap.removeLayer(reportMarker);
     reportMarker = null;
   }
+
   const locInput = document.getElementById('report-location');
   if (locInput) locInput.value = '';
+
   document.querySelectorAll('.level-pill').forEach(p => p.classList.remove('checked'));
   document.querySelector('.level-pill.low')?.classList.add('checked');
   const lowRadio = document.querySelector('input[name="level"][value="thap"]');
