@@ -55,12 +55,54 @@ const CONFIG = {
   // Trọng số loại sự cố
   incident_type_weight: {
     accident: 0.30,
+    weather_rain: 0.28,
+    weather_wind: 0.24,
     flood: 0.25,
     danger: 0.20,
     construction: 0.15,
     traffic: 0.12,
     damaged_road: 0.10,
     obstacle: 0.08
+  },
+
+  // Ngưỡng phân loại thời tiết theo thông số khí tượng (Open-Meteo)
+  weather: {
+    enabled: true,                    // Bật/tắt module thời tiết
+    api_url: 'https://api.open-meteo.com/v1/forecast',
+    timeout_ms: 6000,                 // Timeout mỗi request thời tiết (6 giây)
+    cache_ttl_ms: 1200000,            // TTL cache toạ độ (20 phút)
+    cache_max_entries: 120,           // Giới hạn số entry cache (LRU đơn giản)
+    coord_round_decimals: 2,          // Làm tròn toạ độ để gom chung request (~1.1km)
+    max_samples_per_route: 6,         // Số điểm lấy mẫu tối đa dọc tuyến
+    max_concurrent_requests: 3,       // Số request thời tiết đồng thời
+    refresh_interval_ms: 900000,      // Chu kỳ làm mới định kỳ (15 phút)
+
+    // Ngưỡng mưa (mm/h)
+    rain: {
+      light_max: 2.5,                 // < 2.5 -> mưa nhỏ (rủi ro thấp)
+      moderate_max: 10,               // 2.5 - 10 -> mưa vừa (rủi ro trung bình)
+      incident_threshold: 5,          // >= 5 mm/h -> sinh sự cố thời tiết
+      confidence_base: 55             // Confidence khởi tạo khi sinh sự cố mưa
+    },
+
+    // Ngưỡng tầm nhìn (mét)
+    visibility: {
+      danger_m: 1000,                 // < 1000 -> nguy hiểm cao
+      limited_m: 5000,                // 1000 - 5000 -> hạn chế tầm nhìn
+      incident_threshold_m: 2000,     // < 2000 -> sinh sự cố thời tiết
+      confidence_base: 60
+    },
+
+    // Ngưỡng gió (Beaufort)
+    wind: {
+      incident_beaufort: 5,           // >= cấp 5 -> sinh sự cố gió mạnh
+      confidence_base: 50,
+      bridge_boost: 1.5               // Hệ số nhân rủi ro khi đoạn đường là cầu vượt
+    },
+
+    // Mã số WMO được coi là hiện tượng nghiêm trọng (bão tố / dông lốc)
+    thunderstorm_codes: [95, 96, 99],
+    heavy_rain_codes: [65, 67, 82]    // Mưa lớn / mưa đá
   },
 
   // Cấu hình chu kỳ bán rã (Half-life) suy giảm độ tin cậy theo thời gian (giờ)
@@ -72,7 +114,10 @@ const CONFIG = {
     traffic:      { halfLifeHours: 0.5  }, // Ùn tắc tan nhanh sau giờ cao điểm
     damaged_road: { halfLifeHours: 168  }, // Ổ gà, sụt lún tồn tại lâu
     danger:       { halfLifeHours: 168  }, // Điểm đen nguy hiểm tồn tại lâu
-    obstacle:     { halfLifeHours: 6    }  // Chướng ngại vật dọn dẹp trong ngày
+    obstacle:     { halfLifeHours: 6    }, // Chướng ngại vật dọn dẹp trong ngày
+    // Thời tiết biến động nhanh nên bán rã nhanh, buộc phải lấy mẫu lại thường xuyên
+    weather_rain: { halfLifeHours: 1    },
+    weather_wind: { halfLifeHours: 1    }
   },
 
   // Hệ số thời gian theo ngữ cảnh (Temporal factors)
@@ -114,7 +159,9 @@ const INCIDENT_RENDER_MODE = {
   traffic: 'segment',
   damaged_road: 'segment',
   danger: 'point',
-  obstacle: 'point'
+  obstacle: 'point',
+  weather_rain: 'point',
+  weather_wind: 'point'
 };
 
 // Aliases cho tương thích ngược với code cũ
@@ -149,6 +196,9 @@ const INCIDENT_TYPES = {
   damaged_road: { label: 'Đường hư hỏng',            emoji: '🟤', color: '#8d6e63', renderMode: 'segment' },
   danger:       { label: 'Khu vực nguy hiểm',        emoji: '⚠️', color: '#8a4fe0', renderMode: 'point' },
   obstacle:     { label: 'Chướng ngại vật',          emoji: '🟣', color: '#7c4dff', renderMode: 'point' },
+  // Sự cố thời tiết tự sinh từ Open-Meteo (không phải báo cáo của người dùng)
+  weather_rain: { label: 'Mưa / Đường trơn trượt',  emoji: '🌧️', color: '#1d4ed8', renderMode: 'point' },
+  weather_wind: { label: 'Gió mạnh',                 emoji: '💨', color: '#0f766e', renderMode: 'point' },
 };
 
 const LEVEL_LABEL = {

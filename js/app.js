@@ -18,6 +18,7 @@
   const _shortenDisplayName = (typeof window !== 'undefined' && window.shortenDisplayName) ? window.shortenDisplayName : (s => s);
   const _isValidCoordinate = (typeof window !== 'undefined' && window.isValidCoordinate) ? window.isValidCoordinate : ((lat, lng) => true);
   const _haversineMeters = (typeof window !== 'undefined' && window.haversineMeters) ? window.haversineMeters : ((lat1, lng1, lat2, lng2) => 0);
+  const _weatherConfig = (typeof window !== 'undefined' && window.CONFIG && window.CONFIG.weather) ? window.CONFIG.weather : {};
 
   function _cleanupExpiredIncidents() {
     if (typeof window !== 'undefined' && typeof window.cleanupExpiredIncidents === 'function') {
@@ -86,6 +87,25 @@
     if (typeof window !== 'undefined' && typeof window.openSheet === 'function') {
       window.openSheet();
     }
+  }
+
+  /* ---------------------------------------------------------------
+     LÀM MỚI THỜI TIẾT THEO TUYẾN ĐƯỜNG (module js/weather.js)
+     - Không chặn luồng tìm đường: chạy nền, thất bại cũng không ảnh hưởng kết quả.
+     - Single-flight + cache TTL của weather.js để không spam Open-Meteo.
+  --------------------------------------------------------------- */
+  let _weatherInFlight = false;
+
+  function _refreshWeatherForRoute(route) {
+    if (typeof window === 'undefined' || typeof window.refreshWeatherForRoute !== 'function') return;
+    if (_weatherConfig && _weatherConfig.enabled === false) return;
+    if (!route || !Array.isArray(route.coords) || route.coords.length === 0) return;
+    if (_weatherInFlight) return;
+
+    _weatherInFlight = true;
+    window.refreshWeatherForRoute(route.coords)
+      .catch(() => {})
+      .then(() => { _weatherInFlight = false; });
   }
 
   /* ---------------------------------------------------------------
@@ -225,6 +245,11 @@
       if (typeof window !== 'undefined') window.selectedRouteId = selectedRouteId;
 
       _renderRoutes(routes, selectedMode);
+
+      // Cập nhật thời tiết dọc tuyến tối ưu (chạy nền, không chặn hiển thị kết quả).
+      // Sự cố thời tiết sinh ra sẽ kích hoạt 'incidents-changed' để bản đồ và
+      // điểm rủi ro được cập nhật theo.
+      _refreshWeatherForRoute(sorted[0]);
 
       if (window.innerWidth <= 820) _openSheet();
 

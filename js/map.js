@@ -435,15 +435,210 @@ function findMidpointOnPolyline(coords) {
 }
 
 /**
+ * Định dạng một số đo thời tiết để hiển thị ngắn gọn (giữ tối đa 1 chữ số thập phân).
+ * Trả về '—' nếu giá trị không phải số hợp lệ, để UI không hiện "NaN"/"undefined".
+ * @param {*} v
+ * @returns {string}
+ */
+function _wxNum(v) {
+  const n = Number(v);
+  if (v === null || v === undefined || !Number.isFinite(n)) return '—';
+  return String(Math.round(n * 10) / 10);
+}
+
+/**
+ * Rút gọn metrics thời tiết của một sự cố thành danh sách { label, value }.
+ * - Chỉ hiện Mưa / Tầm nhìn khi API thực sự gửi giá trị (null / undefined => bỏ qua).
+ * - Dòng gió hiện khi loại là weather_wind HOẶC cấp Beaufort >= 5.
+ * - bridge có thể undefined ở payload cũ => chỉ hiện khi đúng bằng true.
+ *
+ * @param {object} inc
+ * @returns {Array<{label: string, value: string}>}
+ */
+function _buildWeatherMetricRows(inc) {
+  const w = (inc && inc.weather && typeof inc.weather === 'object') ? inc.weather : {};
+  const rows = [];
+
+  const rain = w.rainMmPerHour;
+  if (rain !== null && rain !== undefined && Number.isFinite(Number(rain))) {
+    rows.push({ label: 'Lượng mưa', value: `Mưa ${_wxNum(rain)} mm/h` });
+  }
+
+  const vis = w.visibilityMeters;
+  if (vis !== null && vis !== undefined && Number.isFinite(Number(vis))) {
+    rows.push({ label: 'Tầm nhìn', value: `Tầm nhìn ${_wxNum(vis)} m` });
+  }
+
+  const beaufort = w.beaufort;
+  const showWind = inc.type === 'weather_wind'
+    || (Number.isFinite(Number(beaufort)) && Number(beaufort) >= 5);
+  if (showWind) {
+    rows.push({
+      label: 'Gió',
+      value: `Gió cấp ${_wxNum(beaufort)} (${_wxNum(w.windSpeedKmh)} km/h), giật ${_wxNum(w.windGustKmh)} km/h`
+    });
+  }
+
+  // bridge có thể là undefined nếu payload cũ chưa có trường này -> chỉ nhận đúng true
+  if (w.bridge === true) {
+    rows.push({ label: 'Vị trí', value: 'Cầu vượt — nguy cơ cao hơn' });
+  }
+
+  if (rows.length === 0) {
+    rows.push({ label: 'Số liệu', value: 'Chưa có chỉ số thời tiết chi tiết' });
+  }
+  return rows;
+}
+
+/**
+ * Dựng LayerGroup riêng cho SỰ CỐ THỜI TIẾT (nguồn Open-Meteo qua js/weather.js).
+ *
+ * Khác biệt then chốt so với sự cố do người dùng báo cáo:
+ * - LUÔN vẽ dạng POINT (bỏ qua renderMode), vì đây là mẫu điểm thời tiết theo lưới tọa độ.
+ * - KHÔNG có nút "Xác nhận / Hết sự cố": người dùng không thể xác nhận một quan sát từ API,
+ *   nút bấm sẽ làm tăng/hạ confidence của dữ liệu khách quan một cách sai lệch.
+ * - Mọi chuỗi động đều đi qua escapeHtml vì `desc` đến từ API bên ngoài.
+ *
+ * @param {object} inc
+ * @param {number} currentC
+ * @returns {L.LayerGroup}
+ */
+function _buildWeatherIncidentLayer(inc, currentC) {
+  const layer = L.layerGroup();
+  const typesMeta = (typeof window !== 'undefined' && window.INCIDENT_TYPES) ? window.INCIDENT_TYPES : _INCIDENT_TYPES;
+  const levelsMeta = (typeof window !== 'undefined' && window.LEVEL_LABEL) ? window.LEVEL_LABEL : _LEVEL_LABEL;
+  const esc = (typeof window !== 'undefined' && window.escapeHtml) ? window.escapeHtml : _escapeHtml;
+  const colorFn = (typeof window !== 'undefined' && window.getConfidenceColor) ? window.getConfidenceColor : () => 'var(--risk-mid)';
+
+  // Thiếu cấu hình loại thời tiết (config cũ / test env) => dùng màu dự phòng, KHÔNG throw
+  const meta = typesMeta[inc.type] || { emoji: '⚠️', label: 'Sự cố thời tiết', color: '#1d4ed8' };
+  const wxColor = meta.color || '#1d4ed8';
+
+  // Bán kính phản ánh mức độ: cao to nhất để dễ nhận ra ngay trên bản đồ
+  const radius = inc.level === 'cao' ? 10 : (inc.level === 'trungbinh' ? 8 : 6);
+  const levelColor = inc.level === 'cao'
+    ? 'var(--risk-high)'
+    : (inc.level === 'trungbinh' ? 'var(--risk-mid)' : 'var(--risk-low)');
+  const levelText = levelsMeta[inc.level] || inc.level || '—';
+
+  const confPct = Number.isFinite(currentC) ? Math.round(currentC) : 0;
+  const confColor = colorFn(Number.isFinite(currentC) ? currentC : 0);
+
+  const rows = _buildWeatherMetricRows(inc);
+  const tooltipMetrics = rows.map(r => r.value).join(' · ');
+
+  const circle = L.circleMarker([inc.lat, inc.lng], {
+    radius: radius,
+    color: wxColor,
+    weight: 2.5,
+    fillColor: wxColor,
+    fillOpacity: 0.55
+  }).addTo(layer);
+
+  circle.bindTooltip(
+    `<div style="font-weight:700;font-size:12px;color:${wxColor};">${meta.emoji} ${esc(meta.label)}</div>
+     <div style="font-size:11px;color:#333;">${esc(tooltipMetrics)}</div>`,
+    { sticky: true }
+  );
+
+  const rowsHtml = rows.map(r =>
+    `<div class="p-row"><span>${esc(r.label)}</span><b style="color:${wxColor};font-weight:700;">${esc(r.value)}</b></div>`
+  ).join('');
+
+  const popupHtml = `
+    <div class="popup-box">
+      <div class="p-head" style="color:${wxColor};">${meta.emoji} ${esc(meta.label)}</div>
+      <div class="confidence-bar"><div class="confidence-fill" style="width:${confPct}%;background:${confColor}"></div></div>
+      ${rowsHtml}
+      <div class="p-row"><span>Độ tin cậy</span><b style="color:${confColor}">${confPct}%</b></div>
+      <div class="p-row"><span>Nguồn</span><b>Open-Meteo (dữ liệu thời tiết tự động)</b></div>
+      <div class="p-row"><span>Mô tả</span><b>${esc(inc.desc || 'Cảnh báo thời tiết tự động từ dữ liệu khí tượng')}</b></div>
+      <span class="p-level" style="background:${levelColor}22;color:${levelColor}">
+        Mức độ: ${esc(levelText)}
+      </span>
+      <div style="margin-top:8px;font-size:10px;color:var(--text-muted);line-height:1.4;">
+        Sự kiện thời tiết do hệ thống theo dõi tự động, không cần người dùng xác nhận.
+      </div>
+    </div>`;
+
+  circle.bindPopup(popupHtml);
+  if (typeof circle.on === 'function') {
+    circle.on('popupopen', () => { _popupOpenIncidentId = inc.id; });
+    circle.on('popupclose', () => { if (_popupOpenIncidentId === inc.id) _popupOpenIncidentId = null; });
+  }
+
+  /* --- ICON TRỰC QUAN: biểu tượng mây mưa / gió + nhãn cấp gió --- */
+  // circleMarker chỉ là chấm màu, khó nhận ra "mưa" hay "gió" khi nhìn bản đồ.
+  // Thêm một divIcon đè lên chấm để hiện đúng biểu tượng, kèm nhãn ngắn:
+  //   mưa -> lượng mưa (mm/h), gió -> cấp Beaufort.
+  const isWind = inc.type === 'weather_wind';
+  const wx = (inc.weather && typeof inc.weather === 'object') ? inc.weather : {};
+  // Lưu ý: _wxNum trả về CHUỖI đã định dạng, nên ở đây phải tự kiểm tra số hữu hạn.
+  const beaufort = (typeof wx.beaufort === 'number' && Number.isFinite(wx.beaufort)) ? wx.beaufort : null;
+  const rainMm = (typeof wx.rainMmPerHour === 'number' && Number.isFinite(wx.rainMmPerHour) && wx.rainMmPerHour > 0)
+    ? wx.rainMmPerHour : null;
+  const shortLabel = isWind
+    ? `Cấp ${beaufort != null ? Math.round(beaufort) : '?'}`
+    : (rainMm != null ? `${rainMm.toFixed(1)} mm/h` : '');
+
+  const wxIconHtml = `
+    <div class="incident-pin-wrapper">
+      <div class="incident-pin-card" style="border-color:${wxColor};">
+        <span class="incident-pin-emoji">${meta.emoji}</span>
+        ${shortLabel ? `<span class="incident-badge-count" style="background:${wxColor};">${esc(shortLabel)}</span>` : ''}
+      </div>
+      <div class="incident-pin-arrow" style="border-top-color:${wxColor};"></div>
+    </div>`;
+
+  try {
+    if (L.marker && L.divIcon) {
+      const wxIcon = L.divIcon({
+        className: 'incident-marker-container',
+        html: wxIconHtml,
+        iconSize: [36, 42],
+        iconAnchor: [18, 40],
+        popupAnchor: [0, -38]
+      });
+      // zIndexOffset thấp hơn marker điểm đầu/điểm đến (1000) để không che chúng
+      const iconMarker = L.marker([inc.lat, inc.lng], { icon: wxIcon, zIndexOffset: 500 }).addTo(layer);
+      iconMarker.bindTooltip(
+        `<div style="font-weight:700;font-size:12px;color:${wxColor};">${meta.emoji} ${esc(meta.label)}</div>
+         <div style="font-size:11px;color:#333;">${esc(tooltipMetrics)}</div>`,
+        { sticky: true }
+      );
+      iconMarker.bindPopup(popupHtml);
+      if (typeof iconMarker.on === 'function') {
+        iconMarker.on('popupopen', () => { _popupOpenIncidentId = inc.id; });
+        iconMarker.on('popupclose', () => { if (_popupOpenIncidentId === inc.id) _popupOpenIncidentId = null; });
+      }
+    }
+  } catch (err) {
+    // Thiếu divIcon/marker trong môi trường test: chỉ giữ circleMarker, không throw
+  }
+
+  return layer;
+}
+
+/**
  * Xây dựng một LayerGroup độc lập cho một sự cố (bao gồm polyline / marker / popup).
  * Giúp renderIncidents thực hiện incremental update thay vì clearLayers() toàn bộ.
- * 
- * @param {object} inc 
- * @param {number} currentC 
- * @param {number} now 
+ *
+ * @param {object} inc
+ * @param {number} currentC
+ * @param {number} now
  * @returns {L.LayerGroup}
  */
 function _buildIncidentLayer(inc, currentC, now) {
+  // NHÁNH THỜI TIẾT: sự cố từ Open-Meteo, không phải báo cáo người dùng.
+  // Phải kiểm tra SỚM để không đi vào bất kỳ logic point/segment/vote nào của sự cố thường.
+  // Điều kiện nhận diện dự phòng theo tiền tố id 'wx-' của incidents.js: nếu vì lý do nào
+  // đó `source` bị mất, sự cố thời tiết vẫn KHÔNG được rơi vào nhánh có nút bình chọn,
+  // vì người dùng không thể xác nhận một quan sát khách quan từ API.
+  if (inc && (inc.source === 'weather_api'
+    || (typeof inc.id === 'string' && inc.id.indexOf('wx-') === 0)
+    || inc.type === 'weather_rain' || inc.type === 'weather_wind')) {
+    return _buildWeatherIncidentLayer(inc, currentC);
+  }
   const layer = L.layerGroup();
   const typesMeta = (typeof window !== 'undefined' && window.INCIDENT_TYPES) ? window.INCIDENT_TYPES : _INCIDENT_TYPES;
   const levelsMeta = (typeof window !== 'undefined' && window.LEVEL_LABEL) ? window.LEVEL_LABEL : _LEVEL_LABEL;
@@ -731,6 +926,21 @@ if (typeof document !== 'undefined') {
 }
 
 /**
+ * Vẽ lại sự cố khi có sự kiện 'incidents-changed'.
+ * Sự cố thời tiết được tiêm bất đồng bộ từ Open-Meteo và có thể xuất hiện / đổi chỉ số
+ * mà không cần bất kỳ thao tác nào của người dùng, nên phải có đường vẽ lại riêng.
+ * renderIncidents() là incremental (chỉ dựng lại layer khi confidence chênh >= 2% hoặc
+ * cấu trúc sự cố đổi) nên gọi thêm ở đây không gây clearLayers() toàn bản đồ:
+ * nếu incidents.js đã gọi renderIncidents() ngay trước khi dispatch, lượt gọi thứ hai
+ * chỉ quét lại danh sách và bỏ qua mọi layer không đổi.
+ */
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('incidents-changed', () => {
+    renderIncidents();
+  });
+}
+
+/**
  * Hiển thị panel danh sách "Cảnh báo gần bạn" (bán kính <= 3000m)
  */
 function renderNearbyPanel() {
@@ -811,6 +1021,9 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     _incidentLayers,
     _buildIncidentLayer,
+    _buildWeatherIncidentLayer,
+    _buildWeatherMetricRows,
+    _wxNum,
     _getStartIcon,
     _getEndIcon,
     updateStartMarker,

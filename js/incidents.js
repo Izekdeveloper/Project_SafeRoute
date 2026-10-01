@@ -96,7 +96,12 @@ if (typeof document !== 'undefined') {
   });
   _scheduleCleanup();
 } else {
-  setInterval(cleanupExpiredIncidents, 60000); // Node.js fallback
+  // Node.js fallback (môi trường test): dùng unref() để interval này KHÔNG giữ
+  // tiến trình Node sống mãi, nếu không mọi test script sẽ treo sau khi chạy xong.
+  const _cleanupInterval = setInterval(cleanupExpiredIncidents, 60000);
+  if (_cleanupInterval && typeof _cleanupInterval.unref === 'function') {
+    _cleanupInterval.unref();
+  }
 }
 
 function _isDebugMerge() {
@@ -1351,6 +1356,176 @@ function dismissIncident(id) {
   }
 }
 
+/**
+ * Ép giá trị về số hữu hạn, hoặc trả null nếu dữ liệu không dùng được.
+ * Cố tình KHÔNG dùng Number() trực tiếp: Number(null) === 0 và Number('') === 0,
+ * sẽ biến một trường "thiếu" thành số 0 hợp lệ và làm sai lệch toàn bộ risk/routing math.
+ * @param {*} v
+ * @returns {number|null}
+ */
+function _weatherFiniteNumber(v) {
+  if (v === null || v === undefined || typeof v === 'boolean') return null;
+  if (typeof v === 'string' && v.trim() === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * ============================================================================
+ * Nguồn sự cố THỜI TIẾT (Open-Meteo) — không phải báo cáo của người dùng
+ * ============================================================================
+ * Ghi các sự cố thời tiết lấy từ module js/weather.js vào mảng `incidents` dùng chung.
+ *
+ * Nguyên tắc thiết kế:
+ * - Upsert idempotent theo khóa `_weatherKey` (deterministic do js/weather.js sinh ra):
+ *   gọi lại nhiều lần với cùng dữ liệu chỉ tạo/cập nhật đúng một sự cố, không nhân bản.
+ * - `id` suy ra từ khóa (`wx-<key>`), KHÔNG dùng crypto.randomUUID/Date.now():
+ *   sự cố thời tiết phải ổn định để map.js có thể diff với cache lớp tăng dần (incremental layer cache).
+ * - TUYỆT ĐỐI KHÔNG snap vào polyline / gọi Overpass / reverse-geocode:
+ *   đây là mẫu địa lý thô từ API, không phải vị trí người dùng báo cáo.
+ * - Không bao giờ ném lỗi ra ngoài (defensive try/catch từng phần tử): một payload hỏng
+ *   chỉ bị bỏ qua, không được làm hỏng cả vòng fetch của weather.js.
+ *
+ * @param {Array<Object>} payloads - Danh sách payload thời tiết chuẩn hoá từ js/weather.js.
+ * @param {object} [opts={}] - Tuỳ chọn: `reconcile` (mặc định true) quyết định có xoá các
+ *   sự cố thời tiết cũ không còn trong payload hay không. Mảng rỗng = "đã thuận" -> dọn.
+ * @returns {{injected: number, updated: number, removed: number}} Tóm tắt thay đổi.
+ */
+function injectWeatherIncidents(payloads, opts = {}) {
+  const summary = { injected: 0, updated: 0, removed: 0 };
+
+  // Payload không phải mảng => coi như lời gọi lỗi, KHÔNG đụng vào mảng incidents.
+  if (!Array.isArray(payloads)) return summary;
+
+  const now = Date.now();
+  const seenKeys = new Set();
+
+  for (const payload of payloads) {
+    try {
+      if (!payload || typeof payload !== 'object') continue;
+
+      const key = typeof payload.key === 'string' ? payload.key.trim() : '';
+      if (!key) continue;
+      if (typeof payload.type !== 'string' || !payload.type) continue;
+
+      const lat = _weatherFiniteNumber(payload.lat);
+      const lng = _weatherFiniteNumber(payload.lng);
+      if (lat === null || lng === null) continue;
+      // Chặn toạ độ ngoài khoảng hợp lệ để một payload hỏng không tạo sự cố ở [0, 0] ngoài biển.
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) continue;
+
+      // Confidence: ép về [0, 100]; nếu API không gửi giá trị hợp lệ thì mặc định mức trung bình.
+      const rawConfidence = _weatherFiniteNumber(payload.confidence);
+      const confidence = Math.max(0, Math.min(100, rawConfidence === null ? 60 : rawConfidence));
+
+      // Sao chép metrics thô để popup/UI render; thiếu thì để null thay vì undefined.
+      const w = (payload.weather && typeof payload.weather === 'object') ? payload.weather : {};
+      const weather = {
+        rainMmPerHour: _weatherFiniteNumber(w.rainMmPerHour),
+        visibilityMeters: _weatherFiniteNumber(w.visibilityMeters),
+        windSpeedKmh: _weatherFiniteNumber(w.windSpeedKmh) || 0,
+        windGustKmh: _weatherFiniteNumber(w.windGustKmh) || 0,
+        beaufort: _weatherFiniteNumber(w.beaufort) || 0,
+        weatherCode: _weatherFiniteNumber(w.weatherCode),
+        bridge: w.bridge === true
+      };
+
+      seenKeys.add(key);
+
+      const existing = incidents.find(inc => inc && inc._weatherKey === key);
+
+      if (existing) {
+        // Cập nhật tại chỗ: giữ nguyên id/createdAt/startedAt để các tham chiếu khác giữ nguyên hiệu lực.
+        existing.level = payload.level;
+        existing.desc = payload.desc;
+        existing.confidence = confidence;
+        existing.weather = weather;
+        existing.lat = lat;
+        existing.lng = lng;
+        existing.rawLat = lat;
+        existing.rawLng = lng;
+        existing.lastConfirmedAt = now; // reset decay, giữ sự cố "sống" khi API vẫn trả về
+        summary.updated++;
+        continue;
+      }
+
+      // renderMode lấy từ cấu hình tập trung, mặc định 'point' (thời tiết luôn là điểm).
+      const renderMode = (typeof window !== 'undefined' && window.INCIDENT_RENDER_MODE && window.INCIDENT_RENDER_MODE[payload.type])
+        || (typeof window !== 'undefined' && window.INCIDENT_TYPES && window.INCIDENT_TYPES[payload.type]?.renderMode)
+        || 'point';
+
+      incidents.push({
+        id: 'wx-' + key, // id deterministic: map.js cần diff ổn định giữa các vòng fetch
+        type: payload.type,
+        level: payload.level,
+        renderMode: renderMode,
+        lat: lat,
+        lng: lng,
+        rawLat: lat,
+        rawLng: lng,
+        desc: payload.desc,
+        source: 'weather_api',
+        _weatherKey: key, // định danh do hàm này sở hữu, dùng cho upsert + đối soát
+        weather: weather,
+        confidence: confidence,
+        reporterCount: 1,  // không phải người dùng báo cáo
+        reporterIds: [],
+        nodes: [{ lat: lat, lng: lng, reportedAt: now }],
+        startedAt: now,
+        createdAt: now,
+        lastConfirmedAt: now,
+        roadCoords: null,
+        segmentCoords: null,
+        segmentLengthMeters: 0,
+        osmWayId: null,
+        roadBearing: null,
+        roadName: null,
+        normalizedStreet: null
+      });
+      summary.injected++;
+    } catch (err) {
+      // Payload lỗi/khác kiểu dữ liệu => bỏ qua im lặng, tuyệt đối không ném ra ngoài.
+      continue;
+    }
+  }
+
+  // Đối soát (reconciliation): xoá các sự cố thời tiết đã tiêm trước đó nhưng không còn trong payload.
+  //
+  // NGỮ NGHĨA: danh sách payload được truyền vào là "sự thật hiện tại", nên mảng rỗng
+  // có nghĩa là "đã lấy mẫu xong và trời đã thuận" -> phải dọn sự cố cũ, nếu không
+  // sự cố mưa sẽ tồn đọng trên bản đồ tới gần 3 giờ (chờ suy giảm theo halfLife 1h).
+  //
+  // Lớp bảo vệ nằm ở CALLER, không phải ở đây: js/weather.js chỉ gọi hàm này khi
+  // đã lấy được ÍT NHẤT một mẫu thời tiết (fetchWeatherSamples().ok === true).
+  // Khi mạng lỗi, hàm được bỏ qua hoàn toàn nên dữ liệu tốt đang hiển thị được giữ nguyên.
+  //
+  // opts.reconcile = false cho phép tắt hẳn việc dọn (ví dụ khi một vài điểm lấy mẫu
+  // thất bại, tránh làm sự cố cũ nhấp nháy biến mất rồi xuất hiện lại).
+  const shouldReconcile = (opts && opts.reconcile !== false);
+  if (shouldReconcile) {
+    // Duyệt ngược + splice để giữ nguyên tham chiếu mảng (window.incidents, các closure khác).
+    for (let i = incidents.length - 1; i >= 0; i--) {
+      const inc = incidents[i];
+      if (inc && inc._weatherKey && !seenKeys.has(inc._weatherKey)) {
+        incidents.splice(i, 1);
+        summary.removed++;
+      }
+    }
+  }
+
+  // Chỉ thông báo UI khi thực sự có thay đổi, tránh render lại vô ích mỗi vòng poll.
+  if (typeof window !== 'undefined'
+      && (summary.injected > 0 || summary.updated > 0 || summary.removed > 0)) {
+    if (typeof window.renderIncidents === 'function') window.renderIncidents();
+    if (typeof window.renderNearbyPanel === 'function') window.renderNearbyPanel();
+    if (typeof window.dispatchEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('incidents-changed'));
+    }
+  }
+
+  return summary;
+}
+
 // Gắn lên window để truy cập từ giao diện HTML
 if (typeof window !== 'undefined') {
   // Dùng getter/setter để window.incidents luôn trỏ tới mảng hiện hành
@@ -1365,6 +1540,7 @@ if (typeof window !== 'undefined') {
   window.getConfidenceColor = getConfidenceColor;
   window.cleanupExpiredIncidents = cleanupExpiredIncidents;
   window.addOrConfirmIncident = addOrConfirmIncident;
+  window.injectWeatherIncidents = injectWeatherIncidents;
   window.voteConfirmIncident = voteConfirmIncident;
   window.dismissIncident = dismissIncident;
   window.findFarthestNodePair = findFarthestNodePair;
@@ -1385,6 +1561,7 @@ if (typeof module !== 'undefined' && module.exports) {
     getConfidenceColor,
     cleanupExpiredIncidents,
     addOrConfirmIncident,
+    injectWeatherIncidents,
     voteConfirmIncident,
     dismissIncident,
     findFarthestNodePair,

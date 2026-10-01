@@ -1146,7 +1146,11 @@ if (typeof window !== 'undefined') {
  */
 function createActiveIncidentSnapshot(incList, routingNow = Date.now()) {
   const rawList = incList || (typeof window !== 'undefined' && window.incidents ? window.incidents : (typeof incidents !== 'undefined' ? incidents : []));
-  if (!Array.isArray(rawList) || rawList.length === 0) return [];
+  if (!Array.isArray(rawList) || rawList.length === 0) {
+    const emptySnapshot = [];
+    emptySnapshot._snapshotVersion = _incidentSnapshotVersion;
+    return emptySnapshot;
+  }
 
   const confFn = (typeof window !== 'undefined' && window.calculateCurrentConfidence) 
     ? window.calculateCurrentConfidence 
@@ -2164,6 +2168,55 @@ function renderRouteSteps(route) {
 --------------------------------------------------------------- */
 
 /**
+ * Xây dựng HTML chi tiết thời tiết cho một sự cố (nếu có).
+ * Chỉ hiển thị các trường không null/undefined và số hữu hạn.
+ *
+ * @param {object} inc - Đối tượng sự cố, có thể chứa trường `weather`
+ * @returns {string} HTML markup cho hàng chi tiết thời tiết, hoặc chuỗi rỗng nếu không có dữ liệu hợp lệ
+ */
+function buildWeatherDetailHtml(inc) {
+  const w = inc && inc.weather;
+  if (!w || typeof w !== 'object') return '';
+
+  const parts = [];
+
+  // Mưa: rainMmPerHour (number|null)
+  if (typeof w.rainMmPerHour === 'number' && Number.isFinite(w.rainMmPerHour) && w.rainMmPerHour > 0) {
+    parts.push(`Mưa ${w.rainMmPerHour.toFixed(1)} mm/h`);
+  }
+
+  // Tầm nhìn: visibilityMeters (number|null)
+  if (typeof w.visibilityMeters === 'number' && Number.isFinite(w.visibilityMeters) && w.visibilityMeters > 0) {
+    parts.push(`Tầm nhìn ${Math.round(w.visibilityMeters)} m`);
+  }
+
+  // Gió: hiển thị khi beaufort >= 5
+  const beaufort = (typeof w.beaufort === 'number' && Number.isFinite(w.beaufort)) ? w.beaufort : 0;
+  if (beaufort >= 5) {
+    const windSpeed = (typeof w.windSpeedKmh === 'number' && Number.isFinite(w.windSpeedKmh)) ? Math.round(w.windSpeedKmh) : null;
+    const windGust = (typeof w.windGustKmh === 'number' && Number.isFinite(w.windGustKmh)) ? Math.round(w.windGustKmh) : null;
+    let windStr = `Gió cấp ${beaufort}`;
+    const windParts = [];
+    if (windSpeed !== null) windParts.push(`${windSpeed} km/h`);
+    if (windGust !== null) windParts.push(`giật ${windGust} km/h`);
+    if (windParts.length) windStr += ` (${windParts.join(', ')})`;
+    parts.push(windStr);
+  }
+
+  // Cầu vượt: bridge === true
+  if (w.bridge === true) {
+    parts.push('⚠ Cầu vượt');
+  }
+
+  if (parts.length === 0) return '';
+
+  // esc đã được khai báo ở buildRouteWarningsHtml, nhưng helper này độc lập
+  // nên tự lấy escapeHtml từ window hoặc dùng identity fallback
+  const esc = (typeof window !== 'undefined' && window.escapeHtml) ? window.escapeHtml : (s => s);
+  return `<div class="rw-item-meta rw-item-weather">${parts.map(p => esc(p)).join(' · ')}</div>`;
+}
+
+/**
  * Xây dựng HTML cảnh báo các sự cố nằm trên/gần tuyến đường đang chọn.
  * Nếu có sự cố và người dùng chưa ở chế độ "An toàn nhất",
  * hiển thị nút đề xuất chuyển sang chế độ an toàn hơn.
@@ -2193,6 +2246,7 @@ function buildRouteWarningsHtml(route, mode) {
       ? `<span class="rw-zone rw-zone-direct">Trên tuyến (${w.distanceM}m)</span>`
       : `<span class="rw-zone rw-zone-nearby">Lân cận (${w.distanceM}m)</span>`;
     const confColor = confColorFn(w.confidence);
+    const weatherHtml = buildWeatherDetailHtml(inc);
 
     return `<div class="rw-item">
       <div class="rw-item-head">
@@ -2204,6 +2258,7 @@ function buildRouteWarningsHtml(route, mode) {
         <span>Độ tin cậy: <b style="color:${confColor}">${w.confidence}%</b></span>
         <span>Mức độ: <b>${inc.level === 'cao' ? '🔴 Cao' : inc.level === 'trungbinh' ? '🟡 Trung bình' : '🟢 Thấp'}</b></span>
       </div>
+      ${weatherHtml}
     </div>`;
   }).join('');
 
@@ -2453,6 +2508,7 @@ if (typeof window !== 'undefined') {
   window.showMultimodalOption = showMultimodalOption;
   window.backToRoadRoutes = backToRoadRoutes;
   window.switchToSaferMode = switchToSaferMode;
+  window.buildWeatherDetailHtml = buildWeatherDetailHtml;
 
   // Exports phục vụ OSRM Optimization, Cache & Testing
   window.RouteCache = RouteCache;
@@ -2508,6 +2564,7 @@ if (typeof module !== 'undefined' && module.exports) {
     showMultimodalOption,
     backToRoadRoutes,
     switchToSaferMode,
+    buildWeatherDetailHtml,
     RouteCache,
     osrmRouteCache,
     inFlightRequests,
